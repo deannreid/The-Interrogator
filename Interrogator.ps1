@@ -191,7 +191,6 @@ function fncSaveConfig {
     }
 }
 
-
 function fncCheckPSVersion {
     # Detect and Check PowerShell Version
     $psVersion = [version]$PSVersionTable.PSVersion
@@ -322,9 +321,6 @@ function fncCheckModules {
     }
 }
 
-#####
-## Load PSDrive
-####
 function fncLoadPSDrive {
     fncPrintMessage "Attempting to load config from $jsonFilePath" "info"
 
@@ -467,6 +463,7 @@ function fncUpdateDomainSettings {
     }
 }
 
+
 ##############################
 ### Main Application Logic ###
 ##############################
@@ -478,7 +475,41 @@ function fncGetUserInfo {
     )
 
     try {
-        $userDetails = Get-ADUser -Server $dcHost -Identity $user -Properties DistinguishedName, Name, GivenName, Surname, ObjectClass, SamAccountName, UserPrincipalName, LastLogonDate, Enabled, BadPwdCount, Manager, Secretary, LockedOut
+        # Hardcoded privileged groups
+        $builtinPrivilegedGroups = @(
+            "Domain Admins",
+            "Enterprise Admins",
+            "Administrators",
+            "Schema Admins",
+            "Account Operators",
+            "Server Operators",
+            "Backup Operators"
+        )
+
+        # Optional user-defined privileged groups from config
+        $userDefinedPrivilegedGroups = @()
+        if ($global:config.PSObject.Properties.Name -contains "privilegedGroups") {
+            $userDefinedPrivilegedGroups = $global:config.privilegedGroups
+        }
+
+        # Combine all known high-priv groups
+        $privilegedGroups = $builtinPrivilegedGroups + $userDefinedPrivilegedGroups
+
+        # Keywords that indicate privilege (case-insensitive substring match)
+        $privilegedPatterns = @("admin", "super admin", "sudo", "su", "root", "priv", "power")
+
+        # Get user details
+        $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties DistinguishedName, Name, GivenName, Surname, ObjectClass, SamAccountName, UserPrincipalName, LastLogonDate, Enabled, BadPwdCount, Manager, Secretary, LockedOut
+
+        # Get group CNs
+        $userGroupsCN = Get-ADUser -Identity $user -Server $global:dcHost -Properties MemberOf |
+                        Select-Object -ExpandProperty MemberOf |
+                        ForEach-Object { ($_ -split ',')[0] -replace '^CN=' }
+
+        # Check for privileged groups via name or pattern
+        $highlighted = $userGroupsCN | Where-Object {
+            $_ -in $privilegedGroups -or ($privilegedPatterns | Where-Object { $_ -and $_.ToLower() -ne "" -and $_.ToLower() -in $_.ToLower() })
+        }
 
         if ($userDetails) {
             Write-Host "====================================="
@@ -492,11 +523,14 @@ function fncGetUserInfo {
             Write-Host -NoNewline "Enabled: " -ForegroundColor Green; Write-Host "$($userDetails.Enabled)"
             Write-Host -NoNewline "Locked: " -ForegroundColor Green; Write-Host "$($userDetails.LockedOut)"
             Write-Host -NoNewline "Failed Password Attempts: " -ForegroundColor Green; Write-Host "$($userDetails.BadPwdCount)"
+            if ($highlighted.Count -gt 0) {
+                Write-Host "[!] $user is a member of privileged group(s)" -ForegroundColor Red
+            }
             Write-Host ""
 
             Write-Host -NoNewline "Managed By: " -ForegroundColor Green
             if ($userDetails.Manager) {
-                $managerDetails = Get-ADUser -Server $dcHost -Identity $userDetails.Manager -Properties Name
+                $managerDetails = Get-ADUser -Server $global:dcHost -Identity $userDetails.Manager -Properties Name, GivenName, Surname
                 Write-Host "$($managerDetails.GivenName) $($managerDetails.Surname) - $($managerDetails.Name)"
             } else {
                 Write-Host "No manager assigned"
@@ -504,7 +538,7 @@ function fncGetUserInfo {
 
             Write-Host -NoNewline "Deputy Manager: " -ForegroundColor Green
             if ($userDetails.Secretary) {
-                $deputyDetails = Get-ADUser -Server $dcHost -Filter "DistinguishedName -eq '$($userDetails.Secretary)'" -Properties Name
+                $deputyDetails = Get-ADUser -Server $global:dcHost -Filter "DistinguishedName -eq '$($userDetails.Secretary)'" -Properties Name, GivenName, Surname
                 if ($deputyDetails) {
                     Write-Host "$($deputyDetails.GivenName) $($deputyDetails.Surname) - $($deputyDetails.Name)"
                 } else {
@@ -519,24 +553,38 @@ function fncGetUserInfo {
             fncPrintMessage "User not found." "error"
         }
 
+        # Group Membership Breakdown
         Write-Host "-------------------------------------"
-        $userGroups = Get-ADUser -Server $dcHost -Identity $user -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+        $userGroupsDN = Get-ADUser -Server $global:dcHost -Identity $user -Properties MemberOf | Select-Object -ExpandProperty MemberOf
         Write-Host "Currently Applied Groups:`n"
         Write-Host "Key:"
         Write-Host "Group Name             - Yellow" -ForegroundColor Yellow 
-        Write-Host "Domain Controller      - Red" -ForegroundColor Red
+        Write-Host "Domain Controller      - DarkBlue" -ForegroundColor DarkBlue
         Write-Host "Organisational Unit    - White" 
+        Write-Host "High Privileged Group  - [!] + Red" -ForegroundColor Red
         Write-Host "-------------------------------------"
+        Write-Host ""
+        if ($userGroupsDN) {
+            foreach ($groupDN in $userGroupsDN) {
+                $parts = $groupDN -split ','
 
-        if ($userGroups) {
-            $userGroups | ForEach-Object {
-                $groupParts = $_ -split ','
-
-                foreach ($part in $groupParts) {
+                foreach ($part in $parts) {
                     if ($part -like "CN=*") {
-                        Write-Host $part -ForegroundColor Yellow -NoNewline
+                        $groupName = $part -replace '^CN='
+                        $groupNameLower = $groupName.ToLower()
+
+                        $isPrivGroup = (
+                            $privilegedGroups -contains $groupName -or
+                            ($privilegedPatterns | Where-Object { $groupNameLower -like "*$($_.ToLower())*" }).Count -gt 0
+                        )
+
+                        if ($isPrivGroup) {
+                            Write-Host "[!] $groupName " -ForegroundColor Red -NoNewline
+                        } else {
+                            Write-Host $groupName -ForegroundColor Yellow -NoNewline
+                        }
                     } elseif ($part -like "DC=*") {
-                        Write-Host ",$part" -ForegroundColor Red -NoNewline
+                        Write-Host ",$part" -ForegroundColor DarkBlue -NoNewline
                     } else {
                         Write-Host ",$part" -ForegroundColor White -NoNewline
                     }
@@ -1281,6 +1329,9 @@ function fncMain {
     fncCheckModules
     fncLoadPSDrive 
 
+    # Launch main menu
     fncMainMenu
 }
+
+# Run it
 fncMain
