@@ -42,7 +42,7 @@ Designed to operate even from **non-domain-joined machines**, provided DNS resol
 - ✅ **Highlight Domain Admin accounts**  
   Clearly flag any accounts that are members of `Domain Admins`, `Enterprise Admins`, or other privileged groups. **<-- Currently In Testing**
 
-- 🔓 **Detect weak permissions on users or groups**  
+- 🔓 **Detect weak permissions on users or groups**  **<-- Currently In Testing**
   Alert if `GenericAll`, `GenericWrite`, `WriteOwner`, `WriteDACL`, or similar ACEs are found in the user's ACL.
 
 - 📎 **Group nesting and indirect membership**  
