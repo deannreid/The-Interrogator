@@ -410,6 +410,32 @@ function fncConfigureAdminNaming {
     }
 }
 
+function fncConfigurePrivilegedGroups {
+    Write-Host "`n[+] Custom High Privileged Group Configuration" -ForegroundColor Cyan
+    Write-Host "You can define corporate high-priv groups in addition to defaults like 'Domain Admins'." -ForegroundColor Yellow
+    Write-Host "Examples: 'CyberSec Admins', 'Server Operators', 'Tier 0 Teams'"
+
+    $customGroups = @()
+
+    while ($true) {
+        $groupInput = Read-Host "Enter a high-priv group name (Leave blank to finish)"
+        if ([string]::IsNullOrWhiteSpace($groupInput)) { break }
+
+        $customGroups += $groupInput
+        Write-Host "✔ Added: $groupInput" -ForegroundColor Green
+    }
+
+    if ($customGroups.Count -eq 0) {
+        Write-Host "[~] No custom groups added." -ForegroundColor DarkGray
+    } else {
+        Write-Host "`n[✓] Custom High Priv Groups:" -ForegroundColor Cyan
+        $customGroups | ForEach-Object { Write-Host " - $_" -ForegroundColor DarkCyan }
+    }
+
+    return $customGroups
+}
+
+
 function fncInitConfig {
     fncPrintMessage "Initializing configuration..." "info"
 
@@ -462,7 +488,13 @@ if (-not $config) {
 $adminConfig = fncConfigureAdminNaming
 $global:config.deviceAdminGroups = $adminConfig.DeviceAdminGroups
 $global:config.adminAccounts     = $adminConfig.AdminAccounts
+
+# Prompt for custom high-priv groups
+$privGroups = fncConfigurePrivilegedGroups
+$global:config.privilegedGroups = $privGroups
+
 fncSaveConfig -jsonFilePath $jsonFilePath -config $global:config
+
 
 # Check and install modules if needed
 fncCheckModules
