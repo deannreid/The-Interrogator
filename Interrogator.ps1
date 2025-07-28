@@ -463,6 +463,68 @@ function fncUpdateDomainSettings {
     }
 }
 
+function fncCheckWeakACLs {
+    param (
+        [Microsoft.ActiveDirectory.Management.ADUser]$userDetails
+    )
+
+    Write-Host "`n[+] Checking for weak ACLs on user object..." -ForegroundColor Cyan
+
+    try {
+        $dn = $userDetails.DistinguishedName
+        $directoryEntry = [ADSI]"LDAP://$global:dcHost/$dn"
+        $acl = $directoryEntry.psbase.ObjectSecurity
+
+        $riskyRights = @(
+            "GenericAll", "GenericWrite", "WriteOwner", "WriteDACL",
+            "CreateChild", "DeleteChild", "WriteProperty", "Self"
+        )
+
+        $weakEntries = @()
+
+        foreach ($ace in $acl.Access) {
+            foreach ($right in $riskyRights) {
+                if ($ace.ActiveDirectoryRights.ToString().Contains($right)) {
+                    $weakEntries += $ace
+                    break
+                }
+            }
+        }
+
+        # Remove duplicates
+        $weakEntries = $weakEntries | Sort-Object IdentityReference, ActiveDirectoryRights -Unique
+
+        # Default suppress setting if not configured
+        if (-not ($global:config.PSObject.Properties.Name -contains "suppressSelfACE")) {
+            $global:config | Add-Member -MemberType NoteProperty -Name suppressSelfACE -Value $false
+        }
+
+        if ($weakEntries.Count -gt 0) {
+            Write-Host "`n[!] Weak permissions found on user object:" -ForegroundColor Red
+            foreach ($entry in $weakEntries) {
+                if ($global:config.suppressSelfACE -and $entry.IdentityReference -like "*SELF*") {
+                    continue
+                }
+
+                if ($entry.ActiveDirectoryRights.ToString().Contains("GenericAll") -or
+                    $entry.ActiveDirectoryRights.ToString().Contains("WriteDACL") -or
+                    $entry.ActiveDirectoryRights.ToString().Contains("WriteOwner")) {
+                    Write-Host "⚠️  HIGH RISK: $($entry.IdentityReference) - $($entry.ActiveDirectoryRights)" -ForegroundColor Red
+                } else {
+                    Write-Host "    Trustee : $($entry.IdentityReference)" -ForegroundColor Yellow
+                    Write-Host "    Right   : $($entry.ActiveDirectoryRights)"
+                    Write-Host "    Type    : $($entry.AccessControlType)"
+                    Write-Host "    Inherited: $($entry.IsInherited)"
+                    Write-Host ""
+                }
+            }
+        } else {
+            Write-Host "[✓] No weak ACEs found." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[X] Failed to retrieve ACL: $_" -ForegroundColor Red
+    }
+}
 
 ##############################
 ### Main Application Logic ###
@@ -494,9 +556,8 @@ function fncGetUserInfo {
 
         # Combine all known high-priv groups
         $privilegedGroups = $builtinPrivilegedGroups + $userDefinedPrivilegedGroups
-
         # Keywords that indicate privilege (case-insensitive substring match)
-        $privilegedPatterns = @("admin", "super admin", "sudo", "su", "root", "priv", "power")
+        $privilegedPatterns = @("admin", "super admin", "sudo", "su", "root", "priv", "power", "CyberArk")
 
         # Get user details
         $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties DistinguishedName, Name, GivenName, Surname, ObjectClass, SamAccountName, UserPrincipalName, LastLogonDate, Enabled, BadPwdCount, Manager, Secretary, LockedOut
@@ -522,11 +583,13 @@ function fncGetUserInfo {
             Write-Host -NoNewline "Last Logon Date: " -ForegroundColor Green; Write-Host "$($userDetails.LastLogonDate)"
             Write-Host -NoNewline "Enabled: " -ForegroundColor Green; Write-Host "$($userDetails.Enabled)"
             Write-Host -NoNewline "Locked: " -ForegroundColor Green; Write-Host "$($userDetails.LockedOut)"
-            Write-Host -NoNewline "Failed Password Attempts: " -ForegroundColor Green; Write-Host "$($userDetails.BadPwdCount)"
+
+            Write-Host -NoNewline "Failed Password Attempts: " -ForegroundColor Green; Write-Host "$($userDetails.BadPwdCount)" 
+            Write-Host ""                   
             if ($highlighted.Count -gt 0) {
                 Write-Host "[!] $user is a member of privileged group(s)" -ForegroundColor Red
             }
-            Write-Host ""
+            Write-Host "===================================================================================="    
 
             Write-Host -NoNewline "Managed By: " -ForegroundColor Green
             if ($userDetails.Manager) {
@@ -596,7 +659,9 @@ function fncGetUserInfo {
         }
 
         Write-Host "-------------------------------------"
-
+        $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties *
+        fncCheckWeakACLs -userDetails $userDetails
+        Write-Host "-------------------------------------"
     } catch {
         fncPrintMessage "Error retrieving information for user: $user" "error"
     }
