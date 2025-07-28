@@ -556,6 +556,7 @@ function fncGetUserInfo {
 
         # Combine all known high-priv groups
         $privilegedGroups = $builtinPrivilegedGroups + $userDefinedPrivilegedGroups
+
         # Keywords that indicate privilege (case-insensitive substring match)
         $privilegedPatterns = @("admin", "super admin", "sudo", "su", "root", "priv", "power", "CyberArk")
 
@@ -583,7 +584,6 @@ function fncGetUserInfo {
             Write-Host -NoNewline "Last Logon Date: " -ForegroundColor Green; Write-Host "$($userDetails.LastLogonDate)"
             Write-Host -NoNewline "Enabled: " -ForegroundColor Green; Write-Host "$($userDetails.Enabled)"
             Write-Host -NoNewline "Locked: " -ForegroundColor Green; Write-Host "$($userDetails.LockedOut)"
-
             Write-Host -NoNewline "Failed Password Attempts: " -ForegroundColor Green; Write-Host "$($userDetails.BadPwdCount)" 
             Write-Host ""                   
             if ($highlighted.Count -gt 0) {
@@ -624,7 +624,7 @@ function fncGetUserInfo {
         Write-Host "Group Name             - Yellow" -ForegroundColor Yellow 
         Write-Host "Domain Controller      - DarkBlue" -ForegroundColor DarkBlue
         Write-Host "Organisational Unit    - White" 
-        Write-Host "High Privileged Group  - [!] + Red" -ForegroundColor Red
+        Write-Host "High Privilaged Group  - [!] + Red" -ForegroundColor Red
         Write-Host "-------------------------------------"
         Write-Host ""
         if ($userGroupsDN) {
