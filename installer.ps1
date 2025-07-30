@@ -451,6 +451,7 @@ function fncInitConfig {
         $global:config = @{
             DEBUG_ENABLED      = $false
             IS_SETUP           = $false
+            ADVANCED_MODE      = $false
             deviceAdminGroups  = $deviceAdminGroups
             adminAccounts      = $adminAccounts
             modulePath         = ""
