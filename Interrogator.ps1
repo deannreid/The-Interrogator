@@ -180,7 +180,7 @@ function fncSaveConfig {
         }
 
         # Convert and write JSON
-        $json = $config | ConvertTo-Json -Depth 10 -Compress
+        $json = $config | ConvertTo-Json -Depth 10
         Set-Content -Path $jsonFilePath -Value $json -Encoding UTF8
 
         if ($config.DEBUG) {
@@ -624,7 +624,7 @@ function fncGetUserInfo {
         Write-Host "Group Name             - Yellow" -ForegroundColor Yellow 
         Write-Host "Domain Controller      - DarkBlue" -ForegroundColor DarkBlue
         Write-Host "Organisational Unit    - White" 
-        Write-Host "High Privilaged Group  - [!] + Red" -ForegroundColor Red
+        Write-Host "High Privileged Group  - [!] + Red" -ForegroundColor Red
         Write-Host "-------------------------------------"
         Write-Host ""
         if ($userGroupsDN) {
@@ -657,10 +657,16 @@ function fncGetUserInfo {
         } else {
             Write-Host "No groups found for this user."
         }
-
+        Write-Host ""
         Write-Host "-------------------------------------"
-        $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties *
-        fncCheckWeakACLs -userDetails $userDetails
+        
+        if ($global:config.ADVANCED_MODE) {
+            
+            $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties *
+            fncCheckWeakACLs -userDetails $userDetails
+        } else {
+            fncPrintMessage "Advanced Information Mode Disabled - Check Weak ACLs Disabled." "disabled"
+        }
         Write-Host "-------------------------------------"
     } catch {
         fncPrintMessage "Error retrieving information for user: $user" "error"
