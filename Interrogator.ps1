@@ -463,69 +463,6 @@ function fncUpdateDomainSettings {
     }
 }
 
-function fncCheckWeakACLs {
-    param (
-        [Microsoft.ActiveDirectory.Management.ADUser]$userDetails
-    )
-
-    Write-Host "`n[+] Checking for weak ACLs on user object..." -ForegroundColor Cyan
-
-    try {
-        $dn = $userDetails.DistinguishedName
-        $directoryEntry = [ADSI]"LDAP://$global:dcHost/$dn"
-        $acl = $directoryEntry.psbase.ObjectSecurity
-
-        $riskyRights = @(
-            "GenericAll", "GenericWrite", "WriteOwner", "WriteDACL",
-            "CreateChild", "DeleteChild", "WriteProperty", "Self"
-        )
-
-        $weakEntries = @()
-
-        foreach ($ace in $acl.Access) {
-            foreach ($right in $riskyRights) {
-                if ($ace.ActiveDirectoryRights.ToString().Contains($right)) {
-                    $weakEntries += $ace
-                    break
-                }
-            }
-        }
-
-        # Remove duplicates
-        $weakEntries = $weakEntries | Sort-Object IdentityReference, ActiveDirectoryRights -Unique
-
-        # Default suppress setting if not configured
-        if (-not ($global:config.PSObject.Properties.Name -contains "suppressSelfACE")) {
-            $global:config | Add-Member -MemberType NoteProperty -Name suppressSelfACE -Value $false
-        }
-
-        if ($weakEntries.Count -gt 0) {
-            Write-Host "`n[!] Weak permissions found on user object:" -ForegroundColor Red
-            foreach ($entry in $weakEntries) {
-                if ($global:config.suppressSelfACE -and $entry.IdentityReference -like "*SELF*") {
-                    continue
-                }
-
-                if ($entry.ActiveDirectoryRights.ToString().Contains("GenericAll") -or
-                    $entry.ActiveDirectoryRights.ToString().Contains("WriteDACL") -or
-                    $entry.ActiveDirectoryRights.ToString().Contains("WriteOwner")) {
-                    Write-Host "⚠️  HIGH RISK: $($entry.IdentityReference) - $($entry.ActiveDirectoryRights)" -ForegroundColor Red
-                } else {
-                    Write-Host "    Trustee : $($entry.IdentityReference)" -ForegroundColor Yellow
-                    Write-Host "    Right   : $($entry.ActiveDirectoryRights)"
-                    Write-Host "    Type    : $($entry.AccessControlType)"
-                    Write-Host "    Inherited: $($entry.IsInherited)"
-                    Write-Host ""
-                }
-            }
-        } else {
-            Write-Host "[✓] No weak ACEs found." -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "[X] Failed to retrieve ACL: $_" -ForegroundColor Red
-    }
-}
-
 ##############################
 ### Main Application Logic ###
 ##############################
@@ -556,9 +493,9 @@ function fncGetUserInfo {
 
         # Combined privilege group list
         $privilegedGroups = $builtinPrivilegedGroups + $userDefinedPrivilegedGroups
-
+ 
         # Fuzzy matching patterns
-        $privilegedPatterns = @("admin", "super admin", "sudo", "su", "root", "priv", "power", "cyberark")
+        $privilegedPatterns = @("admin", "super admin", "sudo", "root", "priv", "power", "cyberark", "restricted", "elevateduser", "rdp")
 
         # Retrieve user details
         $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties DistinguishedName, Name, GivenName, Surname, ObjectClass, SamAccountName, UserPrincipalName, LastLogonDate, Enabled, BadPwdCount, Manager, Secretary, LockedOut
@@ -592,15 +529,20 @@ function fncGetUserInfo {
         }
 
         Write-Host -NoNewline "Deputy Manager: " -ForegroundColor Green
-        if ($userDetails.Secretary) {
-            $deputyDetails = Get-ADUser -Server $global:dcHost -Filter "DistinguishedName -eq '$($userDetails.Secretary)'" -Properties Name, GivenName, Surname
-            if ($deputyDetails) {
-                Write-Host "$($deputyDetails.GivenName) $($deputyDetails.Surname) - $($deputyDetails.Name)"
+        if ($userDetails.Manager) {
+            $managerDetails = Get-ADUser -Server $global:dcHost -Identity $userDetails.Manager -Properties Name, GivenName, Surname, Manager
+            if ($managerDetails.Manager) {
+                $deputyDetails = Get-ADUser -Server $global:dcHost -Identity $managerDetails.Manager -Properties Name, GivenName, Surname
+                if ($deputyDetails) {
+                    Write-Host "$($deputyDetails.GivenName) $($deputyDetails.Surname) - $($deputyDetails.Name)"
+                } else {
+                    Write-Host "Deputy manager not found"
+                }
             } else {
                 Write-Host "Deputy manager not found"
             }
         } else {
-            Write-Host "No deputy manager assigned"
+            Write-Host "No manager assigned, so no deputy"
         }
 
         Write-Host "===================================================================================="
@@ -612,7 +554,9 @@ function fncGetUserInfo {
         Write-Host "Group Name             - Yellow" -ForegroundColor Yellow
         Write-Host "Domain Component (DC)  - DarkBlue" -ForegroundColor DarkBlue
         Write-Host "Organisational Unit    - White"
-        Write-Host "High Priv Group        - [!] + Red" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Mailbox/Distribution Group    - [~] + Cyan" -ForegroundColor Cyan
+        Write-Host "High Priv Group               - [!] + Red" -ForegroundColor Red
         Write-Host "-------------------------------------"
 
         $userGroupsDN = Get-ADUser -Server $global:dcHost -Identity $user -Properties MemberOf | Select-Object -ExpandProperty MemberOf
@@ -630,15 +574,23 @@ function fncGetUserInfo {
                 $isPrivGroup = $true
             }
 
+            $isMailOrDL = (
+                ($groupDN -match 'OU=Distribution Groups') -or
+                ($groupName -like '*$*') -or
+                ($groupName -like '*distribution*')
+            )
+
             $groupObjects += [PSCustomObject]@{
                 Name         = $groupName
                 DN           = $groupDN
                 IsPrivileged = $isPrivGroup
+                IsMailGroup  = $isMailOrDL
             }
         }
 
         $sortedPriv   = $groupObjects | Where-Object { $_.IsPrivileged } | Sort-Object Name
-        $sortedNormal = $groupObjects | Where-Object { -not $_.IsPrivileged } | Sort-Object Name
+        $sortedNormal = $groupObjects | Where-Object { (-not $_.IsPrivileged) -and (-not $_.IsMailGroup) } | Sort-Object Name
+        $mailGroups   = $groupObjects | Where-Object { $_.IsMailGroup } | Sort-Object Name
 
         if ($sortedPriv.Count -gt 0) {
             Write-Host "`n[!] High Privilege Groups:" -ForegroundColor Red
@@ -678,21 +630,26 @@ function fncGetUserInfo {
             Write-Host "`n[-] No standard groups found." -ForegroundColor DarkGray
         }
 
-        Write-Host "-------------------------------------"
-
-        # Advanced Info Mode
-        if ($global:config.ADVANCED_MODE) {
-            fncCheckWeakACLs -userDetails $userDetails
-        } else {
-            fncPrintMessage "Advanced Information Mode Disabled – Check Weak ACLs Disabled." "disabled"
+        if ($mailGroups.Count -gt 0) {
+            Write-Host "`n[~] Mailboxes and Distribution Lists:" -ForegroundColor Cyan
+            foreach ($g in $mailGroups) {
+                foreach ($p in $g.DN -split ',') {
+                    if ($p -like "CN=*") {
+                        Write-Host "[~] $($g.Name)" -ForegroundColor Cyan -NoNewline
+                    } elseif ($p -like "DC=*") {
+                        Write-Host ",$p" -ForegroundColor DarkBlue -NoNewline
+                    } else {
+                        Write-Host ",$p" -ForegroundColor White -NoNewline
+                    }
+                }
+                Write-Host ""
+            }
         }
-
         Write-Host "-------------------------------------"
     } catch {
         fncPrintMessage "Error retrieving information for user: $user" "error"
     }
 }
-
 
 ##### group Info
 function fncGetGroupInfo {
@@ -1116,6 +1073,969 @@ function fncPresetRunner {
     fncPrintMessage "✔ Completed execution on: $selectedItem" "success"
 }
 
+### 
+# Advanced Menu Items #
+###
+
+# ================================================================
+# Function: fncDumpUserGroups
+# Purpose : Extracts all AD groups a user belongs to and exports details.
+# Notes   : Includes group description, scope, OU, manager, and deputy info in CSV.
+# ================================================================
+function fncDumpUserGroups {
+    param (
+        [string]$username
+    )
+
+    if (-not $username) {
+        $username = Read-Host "Enter username to dump groups for"
+        if (-not $username) {
+            Write-Host "[-] No username provided. Aborting." -ForegroundColor Red
+            return
+        }
+    }
+
+    try {
+        $dcHost = $global:dcHost
+
+        Write-Host "`n[+] Dumping groups for user: $username" -ForegroundColor Cyan
+
+        $user = Get-ADUser -Server $dcHost -Identity $username -Properties MemberOf
+        if (-not $user) {
+            Write-Host "[-] User not found." -ForegroundColor Red
+            return
+        }
+
+        $groups = $user.MemberOf
+        if (-not $groups) {
+            Write-Host "[-] No groups found for $username." -ForegroundColor Yellow
+            return
+        }
+
+        $output = @()
+
+        foreach ($groupDN in $groups) {
+            Write-Host "[*] Processing: $groupDN" -ForegroundColor Gray
+
+            $groupObj = Get-ADGroup -Server $dcHost -Identity $groupDN -Properties Name, Description, DistinguishedName, GroupCategory, GroupScope, whenCreated, whenChanged, ManagedBy
+
+            $cn = ($groupObj.DistinguishedName -split ',')[0] -replace '^CN='
+            $ouParts = ($groupObj.DistinguishedName -split ',') | Where-Object { $_ -like 'OU=*' }
+            $ou = ($ouParts -join '/')
+            if (-not $ou) { $ou = "NO INFO" }
+
+            $manager = "NO INFO"
+            $deputy = "NO INFO"
+
+            if ($groupObj.ManagedBy) {
+                try {
+                    $mgr = Get-ADUser -Server $dcHost -Identity $groupObj.ManagedBy -Properties Name, GivenName, Surname, Manager
+                    $manager = "$($mgr.GivenName) $($mgr.Surname) - $($mgr.Name)"
+
+                    if ($mgr.Manager) {
+                        $deputyObj = Get-ADUser -Server $dcHost -Identity $mgr.Manager -Properties Name, GivenName, Surname
+                        $deputy = "$($deputyObj.GivenName) $($deputyObj.Surname) - $($deputyObj.Name)"
+                    }
+                } catch {
+                    $manager = "NO INFO"
+                    $deputy = "NO INFO"
+                }
+            }
+
+            $output += [PSCustomObject]@{
+                "Application CN"     = if ($cn) { $cn } else { "NO INFO" }
+                "Application Name"   = if ($groupObj.Description) { $groupObj.Description } else { "NO INFO" }
+                "Application OU"     = $ou
+                "Category"           = if ($groupObj.GroupCategory) { $groupObj.GroupCategory } else { "NO INFO" }
+                "Scope"              = if ($groupObj.GroupScope) { $groupObj.GroupScope } else { "NO INFO" }
+                "Created"            = if ($groupObj.whenCreated) { $groupObj.whenCreated } else { "NO INFO" }
+                "Modified"           = if ($groupObj.whenChanged) { $groupObj.whenChanged } else { "NO INFO" }
+                "Manager"            = $manager
+                "Deputy Manager"     = $deputy
+            }
+        }
+
+        $csvPath = "$PWD\Dump_UserGroups_$($username)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        $output | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath
+
+        Write-Host "`n[+] Dump complete! CSV saved to:" -ForegroundColor Green
+        Write-Host $csvPath -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "[-] Error: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncDumpComputerGroups
+# Purpose : Extracts all AD groups a computer belongs to and exports details.
+# Notes   : Outputs group description, OU, scope, and manager info to CSV.
+# ================================================================
+function fncDumpComputerGroups {
+    param (
+        [string]$computerName
+    )
+
+    # Prompt if not supplied
+    if (-not $computerName) {
+        $computerName = Read-Host "Enter computer name to dump groups for"
+        if (-not $computerName) {
+            Write-Host "[-] No computer name provided. Aborting." -ForegroundColor Red
+            return
+        }
+    }
+
+    try {
+        $dcHost = $global:dcHost
+
+        Write-Host "`n[+] Dumping groups for computer: $computerName" -ForegroundColor Cyan
+
+        $groups = Get-ADComputer -Server $dcHost -Identity $computerName -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+        if (-not $groups) {
+            Write-Host "[-] No groups found for $computerName." -ForegroundColor Yellow
+            return
+        }
+
+        $output = @()
+
+        foreach ($groupDN in $groups) {
+            $groupObj = Get-ADGroup -Server $dcHost -Identity $groupDN -Properties Name, Description, DistinguishedName, GroupCategory, GroupScope, whenCreated, whenChanged, ManagedBy
+            Write-Host "[~] Processing group: $groupDN" -ForegroundColor DarkGray
+            $cn = ($groupObj.DistinguishedName -split ',')[0] -replace '^CN='
+
+            $ouParts = ($groupObj.DistinguishedName -split ',') | Where-Object { $_ -like 'OU=*' }
+            $ou = if ($ouParts) { $ouParts -join '/' } else { "NO INFO" }
+
+            $manager = "NO INFO"
+            $deputy = "NO INFO"
+
+            if ($groupObj.ManagedBy) {
+                try {
+                    $mgr = Get-ADUser -Server $dcHost -Identity $groupObj.ManagedBy -Properties Name, GivenName, Surname, Manager
+                    if ($mgr) {
+                        $manager = "$($mgr.GivenName) $($mgr.Surname) - $($mgr.Name)"
+                    }
+
+                    if ($mgr.Manager) {
+                        $deputyObj = Get-ADUser -Server $dcHost -Identity $mgr.Manager -Properties Name, GivenName, Surname
+                        if ($deputyObj) {
+                            $deputy = "$($deputyObj.GivenName) $($deputyObj.Surname) - $($deputyObj.Name)"
+                        }
+                    }
+                } catch {
+                    $manager = "NO INFO"
+                    $deputy = "NO INFO"
+                }
+            }
+
+            $output += [PSCustomObject]@{
+                "Application Name"   = if ($groupObj.Description) { $groupObj.Description } else { "NO INFO" }
+                "Application CN"     = $groupObj.Name
+                "Application OU"     = $ou
+                "Category"           = if ($groupObj.GroupCategory) { $groupObj.GroupCategory } else { "NO INFO" }
+                "Scope"              = if ($groupObj.GroupScope) { $groupObj.GroupScope } else { "NO INFO" }
+                "Created"            = if ($groupObj.whenCreated) { $groupObj.whenCreated } else { "NO INFO" }
+                "Modified"           = if ($groupObj.whenChanged) { $groupObj.whenChanged } else { "NO INFO" }
+                "Manager"            = $manager
+                "Deputy Manager"     = $deputy
+            }
+        }
+
+        $csvPath = "$PWD\Dump_ComputerGroups_$($computerName)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        $output | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath
+
+        Write-Host "`n[+] Dump complete! CSV saved to:" -ForegroundColor Green
+        Write-Host $csvPath -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "[-] Error: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncDumpGroupMembers
+# Purpose : Dumps members of a specified AD group into a detailed CSV.
+# Notes   : Includes SAML, name, email, and manager; supports export for audit.
+# ================================================================
+function fncDumpGroupMembers {
+    param (
+        [string]$groupName
+    )
+
+    # Ask for group name if not supplied
+    if (-not $groupName) {
+        $groupName = Read-Host "Enter AD group name to dump members for"
+        if (-not $groupName) {
+            Write-Host "[-] No group name provided. Aborting." -ForegroundColor Red
+            return
+        }
+    }
+
+    try {
+        Write-Host "`n[+] Dumping members of group: $groupName" -ForegroundColor Cyan
+
+        $dcHost = $global:dcHost  # Uses your domain controller context
+        $group = Get-ADGroup -Server $dcHost -Identity $groupName -ErrorAction Stop
+        $members = Get-ADGroupMember -Server $dcHost -Identity $group.DistinguishedName -Recursive | Where-Object { $_.objectClass -eq 'user' }
+
+        if (-not $members) {
+            Write-Host "[-] No user members found in $groupName." -ForegroundColor Yellow
+            return
+        }
+
+        $output = @()
+
+        foreach ($member in $members) {
+            Write-Host "[*] Processing: $($member.SamAccountName)" -ForegroundColor DarkGray
+
+            $user = Get-ADUser -Server $dcHost -Identity $member.SamAccountName -Properties GivenName, Surname, EmailAddress, Manager
+
+            $managerName = "NO INFO"
+            if ($user.Manager) {
+                try {
+                    $mgr = Get-ADUser -Server $dcHost -Identity $user.Manager -Properties GivenName, Surname
+                    $managerName = "$($mgr.GivenName) $($mgr.Surname)"
+                } catch {
+                    $managerName = "NO INFO"
+                }
+            }
+
+            $output += [PSCustomObject]@{
+                "Group Name"    = $group.Name
+                "SAML"          = $user.SamAccountName
+                "First Name"    = if ($user.GivenName) { $user.GivenName } else { "NO INFO" }
+                "Surname"       = if ($user.Surname) { $user.Surname } else { "NO INFO" }
+                "Email"         = if ($user.EmailAddress) { $user.EmailAddress } else { "NO INFO" }
+                "Manager Name"  = $managerName
+            }
+        }
+
+        $csvPath = "$PWD\Dump_GroupMembers_$($group.Name)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        $output | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath
+
+        Write-Host "`n[+] Dump complete! CSV saved to:" -ForegroundColor Green
+        Write-Host $csvPath -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "[-] Error: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckWeakACLs
+# Purpose : Identifies risky ACEs on an AD user object that could allow privilege escalation.
+# Notes   : Flags rights like GenericAll, WriteDACL, and WriteOwner using Get-Acl.
+# ================================================================
+
+function fncCheckWeakACLs {
+    param (
+        [Microsoft.ActiveDirectory.Management.ADUser]$userDetails
+    )
+
+    Write-Host "====================================="
+    Write-Host "`n[+] Checking for weak ACLs on user object..." -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $dn = $userDetails.DistinguishedName
+
+        # Use PSDrive name (default AD or from config)
+        $driveName = if ($global:config.PSObject.Properties.Name -contains "driveName") {
+            $global:config.driveName
+        } else {
+            "AD"
+        }
+
+        $path = "$driveName\$dn"
+        $acl = Get-Acl -Path $path
+
+        $riskyRights = @(
+            "GenericAll", "GenericWrite", "WriteOwner", "WriteDACL",
+            "CreateChild", "DeleteChild", "WriteProperty", "Self"
+        )
+
+        $weakEntries = @()
+
+        foreach ($entry in $acl.Access) {
+            foreach ($right in $riskyRights) {
+                if ($entry.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::$right)) {
+                    $weakEntries += $entry
+                    break
+                }
+            }
+        }
+
+        $weakEntries = $weakEntries | Sort-Object IdentityReference, ActiveDirectoryRights -Unique
+
+        if (-not ($global:config.PSObject.Properties.Name -contains "suppressSelfACE")) {
+            $global:config | Add-Member -MemberType NoteProperty -Name suppressSelfACE -Value $false
+        }
+
+        if ($weakEntries.Count -gt 0) {
+            Write-Host "`n[!] Weak permissions found on user object:" -ForegroundColor Red
+            foreach ($entry in $weakEntries) {
+                if ($global:config.suppressSelfACE -and $entry.IdentityReference -like "*SELF*") {
+                    continue
+                }
+
+                if ($entry.ActiveDirectoryRights -match 'GenericAll|WriteDACL|WriteOwner') {
+                    Write-Host "⚠️  HIGH RISK: $($entry.IdentityReference) - $($entry.ActiveDirectoryRights)" -ForegroundColor Red
+                } else {
+                    Write-Host "    Trustee   : $($entry.IdentityReference)" -ForegroundColor Yellow
+                    Write-Host "    Right     : $($entry.ActiveDirectoryRights)"
+                    Write-Host "    Type      : $($entry.AccessControlType)"
+                    Write-Host "    Inherited : $($entry.IsInherited)"
+                    Write-Host ""
+                }
+            }
+        } else {
+            Write-Host "[✓] No weak ACEs found." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[X] Failed to retrieve ACL: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckSACLS
+# Purpose : Retrieves and displays the SACL (audit permissions) 
+# Notes   : Useful for identifying what actions on the object are audited,
+#           including who is audited, for what rights, and whether for
+#           success, failure, or both.
+# ================================================================
+function fncCheckSACL {
+    param (
+        [Microsoft.ActiveDirectory.Management.ADUser]$userDetails
+    )
+    Write-Host "====================================="
+    Write-Host "`n[+] Checking SACL (auditing permissions) for user object..." -ForegroundColor Cyan
+    Write-Host "====================================="
+    try {
+        $dn = $userDetails.DistinguishedName
+
+        # Use DirectoryEntry to get underlying object
+        $entry = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$dn")
+
+        # Get security descriptor with SACL (requires SeSecurityPrivilege!)
+        $flags = [System.DirectoryServices.SecurityMasks]::Sacl
+        $entry.Options.SecurityMasks = $flags
+        $descriptor = $entry.ObjectSecurity
+
+        $sacl = $descriptor.GetAuditRules($true, $true, [System.Security.Principal.NTAccount])
+
+        if ($sacl.Count -gt 0) {
+            Write-Host "`n[!] Auditing Rules Found in SACL:" -ForegroundColor Yellow
+
+            foreach ($rule in $sacl) {
+                Write-Host "------------------------------------"
+                Write-Host "Identity      : $($rule.IdentityReference)"
+                Write-Host "Access Type   : $($rule.AuditFlags)"
+                Write-Host "Inherited     : $($rule.IsInherited)"
+                Write-Host "Rights        : $($rule.ActiveDirectoryRights)"
+                Write-Host ""
+            }
+        } else {
+            Write-Host "[✓] No auditing rules (SACL entries) found." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[X] Failed to retrieve SACL. You may lack SeSecurityPrivilege." -ForegroundColor Red
+        Write-Host "Error: $_"
+    }
+}
+
+# ================================================================
+# Function: fncGetDomainInfo
+# Purpose : Displays details about the current domain
+# Notes   : Uses Get-ADDomain and Get-ADDomainController
+# ================================================================
+function fncGetDomainInfo {
+    Write-Host "`n[+] Retrieving Domain Information..." -ForegroundColor Cyan
+    Write-Host "==========================================="
+
+    try {
+        $domain = Get-ADDomain -Server $global:dcHost
+        $dc = Get-ADDomainController -Server $global:dcHost
+
+        Write-Host ("Domain Name              : $($domain.Name)")
+        Write-Host ("NetBIOS Name             : $($domain.NetBIOSName)")
+        Write-Host ("Domain Mode              : $($domain.DomainMode)")
+        Write-Host ("Infrastructure Master    : $($domain.InfrastructureMaster)")
+        Write-Host ("RID Master               : $($domain.RIDMaster)")
+        Write-Host ("PDC Emulator             : $($domain.PDCEmulator)")
+
+        Write-Host ("Default OU               : $($domain.ComputersContainer)")
+        Write-Host ("Users Container          : $($domain.UsersContainer)")
+        Write-Host ("DC Hostname              : $($dc.HostName)")
+        Write-Host ("DC IPv4 Address          : $($dc.IPv4Address)")
+        Write-Host ("DC Site                  : $($dc.Site)")
+        Write-Host ("Is Global Catalog        : $($dc.IsGlobalCatalog)")
+        Write-Host ("Is Read Only             : $($dc.IsReadOnly)")
+        Write-Host ("Operating System         : $($dc.OperatingSystem)")
+
+        if ($null -ne $domain.AllowedDNSSuffixes -and $domain.AllowedDNSSuffixes.Count -gt 0) {
+            Write-Host ("Allowed DNS Suffixes     : $($domain.AllowedDNSSuffixes -join ', ')")
+        } else {
+            Write-Host "Allowed DNS Suffixes     : None"
+        }
+
+        Write-Host "==========================================="
+    } catch {
+        Write-Host "[X] Failed to retrieve domain info: $_" -ForegroundColor Red
+    }
+
+    Pause
+}
+
+# ================================================================
+# Function: fncGetForestInfo
+# Purpose : Displays detailed information about the AD forest
+# Notes   : Formats sites on separate lines and adds more metadata
+# ================================================================
+function fncGetForestInfo {
+    Write-Host "`n[+] Retrieving Forest Information..." -ForegroundColor Cyan
+    Write-Host "=============================================="
+
+    try {
+        $forest = Get-ADForest -Server $global:dcHost
+
+        Write-Host ("Forest Root Domain       : $($forest.RootDomain)")
+        Write-Host ("Forest Mode              : $($forest.ForestMode)")
+        Write-Host ("Global Catalogs          :")
+        foreach ($gc in $forest.GlobalCatalogs) {
+            Write-Host ("    - $gc")
+        }
+
+        Write-Host ("Application Partitions   :")
+        if ($null -ne $forest.ApplicationPartitions -and $forest.ApplicationPartitions.Count -gt 0) {
+            foreach ($ap in $forest.ApplicationPartitions) {
+                Write-Host ("    - $ap")
+            }
+        } else {
+            Write-Host "    None"
+        }
+
+        Write-Host ("UPNs Suffixes            :")
+        if ($null -ne $forest.UPNSuffixes -and $forest.UPNSuffixes.Count -gt 0) {
+            foreach ($upn in $forest.UPNSuffixes) {
+                Write-Host ("    - $upn")
+            }
+        } else {
+            Write-Host "    None"
+        }
+
+        Write-Host ("Sites in Forest          :")
+        if ($null -ne $forest.Sites -and $forest.Sites.Count -gt 0) {
+            foreach ($site in $forest.Sites) {
+                Write-Host ("    - $site")
+            }
+        } else {
+            Write-Host "    None"
+        }
+
+        Write-Host ("Domains in Forest        :")
+        if ($null -ne $forest.Domains -and $forest.Domains.Count -gt 0) {
+            foreach ($domain in $forest.Domains) {
+                Write-Host ("    - $domain")
+            }
+        } else {
+            Write-Host "    None"
+        }
+
+        Write-Host ("Trusts in Forest         :")
+        if ($null -ne $forest.DomainNamingMaster -and (Get-ADTrust -Filter * -Server $global:dcHost -ErrorAction SilentlyContinue)) {
+            $trusts = Get-ADTrust -Filter * -Server $global:dcHost
+            foreach ($trust in $trusts) {
+                Write-Host ("    - $($trust.Name) [$($trust.TrustType)] - $($trust.TrustDirection)")
+            }
+        } else {
+            Write-Host "    None found or insufficient permissions"
+        }
+
+        Write-Host "=============================================="
+    } catch {
+        Write-Host "[X] Failed to retrieve forest info: $_" -ForegroundColor Red
+    }
+
+    Pause
+}
+
+# ================================================================
+# Function: fncListDomainControllers
+# Purpose : Lists all domain controllers in the current domain with details
+# Notes   : Includes OS, site, IPv4/IPv6, roles, status, and replication info
+# ================================================================
+function fncListDomainControllers {
+    Write-Host "`n[+] Listing Domain Controllers in Domain..." -ForegroundColor Cyan
+    Write-Host "=============================================="
+
+    try {
+        $dcs = Get-ADDomainController -Filter * -Server $global:dcHost
+
+        if (-not $dcs) {
+            Write-Host "[!] No domain controllers found." -ForegroundColor Yellow
+            return
+        }
+
+        foreach ($dc in $dcs) {
+            Write-Host "----------------------------------------------"
+            Write-Host ("Hostname              : $($dc.HostName)")
+            Write-Host ("IPv4 Address          : $($dc.IPv4Address)")
+            Write-Host ("IPv6 Address          : $($dc.IPv6Address)")
+            Write-Host ("Site Name             : $($dc.Site)")
+            Write-Host ("Domain Name           : $($dc.Domain)")
+            Write-Host ("Forest                : $($dc.Forest)")
+            Write-Host ("Is Global Catalog     : $($dc.IsGlobalCatalog)")
+            Write-Host ("Is Read-Only DC       : $($dc.IsReadOnly)")
+            Write-Host ("Operating System      : $($dc.OperatingSystem)")
+            Write-Host ("OS Version            : $($dc.OperatingSystemVersion)")
+            Write-Host ("OS Service Pack       : $($dc.OperatingSystemServicePack)")
+            Write-Host ("Last Logon Time       : $($dc.LastLogonTime)")
+            Write-Host ("Server Object DN      : $($dc.ServerObjectDN)")
+
+            # FSMO Roles (only printed if roles exist on this DC)
+            $domain = Get-ADDomain -Server $dc.HostName
+            $fsmoRoles = @()
+            if ($domain.InfrastructureMaster -eq $dc.HostName) { $fsmoRoles += "Infrastructure Master" }
+            if ($domain.PDCEmulator -eq $dc.HostName) { $fsmoRoles += "PDC Emulator" }
+            if ($domain.RIDMaster -eq $dc.HostName) { $fsmoRoles += "RID Master" }
+
+            $forest = Get-ADForest -Server $dc.HostName
+            if ($forest.SchemaMaster -eq $dc.HostName) { $fsmoRoles += "Schema Master" }
+            if ($forest.DomainNamingMaster -eq $dc.HostName) { $fsmoRoles += "Domain Naming Master" }
+
+            if ($fsmoRoles.Count -gt 0) {
+                Write-Host "FSMO Roles            : $($fsmoRoles -join ', ')" -ForegroundColor Yellow
+            }
+
+            # Replication Status (Optional)
+            try {
+                $repStatus = repadmin /showrepl $dc.HostName /errorsonly
+                if ($repStatus) {
+                    Write-Host "Replication Errors     : Possible issues detected!" -ForegroundColor Red
+                } else {
+                    Write-Host "Replication Status     : Healthy"
+                }
+            } catch {
+                Write-Host "Replication Status     : Unable to check (repadmin not available)"
+            }
+
+            Write-Host "----------------------------------------------`n"
+        }
+
+        Write-Host "[✓] Domain Controller enumeration completed." -ForegroundColor Green
+    } catch {
+        Write-Host "[X] Error retrieving domain controllers: $_" -ForegroundColor Red
+    }
+
+    Pause
+}
+
+# ================================================================
+# Function: fncGetTrusts
+# Purpose : Enumerates domain and forest trusts with details
+# Notes   : Requires Domain Admin or appropriate rights
+# ================================================================
+function fncGetTrusts {
+    Write-Host "`n[+] Enumerating Domain and Forest Trusts..." -ForegroundColor Cyan
+    Write-Host "=============================================="
+
+    try {
+        $trusts = Get-ADTrust -Filter * -Server $global:dcHost
+
+        if (-not $trusts -or $trusts.Count -eq 0) {
+            Write-Host "[!] No trusts found." -ForegroundColor Yellow
+            return
+        }
+
+        foreach ($trust in $trusts) {
+            Write-Host "----------------------------------------------"
+            Write-Host "Trusted Domain        : $($trust.Name)"
+            Write-Host "Trust Type            : $($trust.TrustType)"         # Forest / External / Realm / Kerberos
+            Write-Host "Direction             : $($trust.Direction)"         # Inbound / Outbound / Bidirectional
+            Write-Host "Transitive            : $($trust.Transitive)"
+            Write-Host "Trust Attributes      : $($trust.TrustAttributes)"
+            Write-Host "Trust Partner         : $($trust.TrustedDomain)"
+            Write-Host "Selective Auth?       : $($trust.SelectiveAuthentication)"
+            Write-Host "SID Filtering Enabled : $($trust.SIDFilteringEnabled)"
+            Write-Host "Trust Forest?         : $($trust.IsForest)"
+            Write-Host "----------------------------------------------`n"
+        }
+
+        Write-Host "[✓] Trust enumeration complete." -ForegroundColor Green
+    } catch {
+        Write-Host "[X] Failed to retrieve trusts: $_" -ForegroundColor Red
+    }
+
+    Pause
+}
+
+# ================================================================
+# Function: fncGetFSMORoles
+# Purpose : Retrieves and displays all FSMO role holders
+# Notes   : Requires domain connectivity; uses Get-ADDomain & Get-ADForest
+# ================================================================
+function fncGetFSMORoles {
+    Write-Host "`n[+] Retrieving FSMO Role Holders..." -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $domain = Get-ADDomain -Server $global:dcHost
+        $forest = Get-ADForest -Server $global:dcHost
+
+        Write-Host "`n==== Domain FSMO Roles ====" -ForegroundColor Yellow
+        Write-Host "PDC Emulator      : $($domain.PDCEmulator)"
+        Write-Host "RID Master        : $($domain.RIDMaster)"
+        Write-Host "Infrastructure    : $($domain.InfrastructureMaster)"
+
+        Write-Host "`n==== Forest FSMO Roles ====" -ForegroundColor Yellow
+        Write-Host "Schema Master     : $($forest.SchemaMaster)"
+        Write-Host "Domain Naming     : $($forest.DomainNamingMaster)"
+
+        Write-Host "`n[✓] FSMO role enumeration complete." -ForegroundColor Green
+    } catch {
+        Write-Host "[X] Failed to retrieve FSMO roles: $_" -ForegroundColor Red
+    }
+
+    Pause
+}
+
+# ================================================================
+# Function: fncCheckSPN
+# Purpose : Check if a user has any SPNs assigned
+# Notes   : Useful for Kerberoasting enumeration
+# ================================================================
+function fncCheckSPN {
+    param (
+        [string]$user
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Checking for SPNs on user: $user" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties ServicePrincipalName, SamAccountName, Name
+
+        if ($null -eq $userDetails) {
+            Write-Host "[-] User not found." -ForegroundColor Red
+            return
+        }
+
+        if ($userDetails.ServicePrincipalName -and $userDetails.ServicePrincipalName.Count -gt 0) {
+            Write-Host "`n[!] SPNs found for user $($userDetails.SamAccountName) - $($userDetails.Name):" -ForegroundColor Yellow
+            $userDetails.ServicePrincipalName | ForEach-Object {
+                Write-Host "    $_" -ForegroundColor Magenta
+            }
+        } else {
+            Write-Host "[✓] No SPNs assigned to this user." -ForegroundColor Green
+        }
+
+    } catch {
+        Write-Host "[X] Error checking SPNs: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckSIDHistory
+# Purpose : Check if a user has any SID History values
+# Notes   : Useful for identifying legacy/migrated accounts or SID injection
+# ================================================================
+function fncCheckSIDHistory {
+    param (
+        [string]$user
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Checking SID History for user: $user" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties SIDHistory, SamAccountName, Name
+
+        if ($null -eq $userDetails) {
+            Write-Host "[-] User not found." -ForegroundColor Red
+            return
+        }
+
+        if ($userDetails.SIDHistory -and $userDetails.SIDHistory.Count -gt 0) {
+            Write-Host "`n[!] SID History entries found for user $($userDetails.SamAccountName) - $($userDetails.Name):" -ForegroundColor Yellow
+            $userDetails.SIDHistory | ForEach-Object {
+                Write-Host "    $_" -ForegroundColor Magenta
+            }
+        } else {
+            Write-Host "[✓] No SID History entries found." -ForegroundColor Green
+        }
+
+    } catch {
+        Write-Host "[X] Error checking SID History: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncListTokenGroups
+# Purpose : List all token groups (including transitive) for a user
+# Notes   : Includes both resolved group names and SID values
+# ================================================================
+function fncListTokenGroups {
+    param (
+        [string]$user
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Listing Token Groups for user: $user" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $userObject = Get-ADUser -Server $global:dcHost -Identity $user -Properties TokenGroups
+
+        if ($null -eq $userObject) {
+            Write-Host "[-] User not found." -ForegroundColor Red
+            return
+        }
+
+        if ($userObject.TokenGroups.Count -eq 0) {
+            Write-Host "[✓] No token groups found for this user." -ForegroundColor Green
+            return
+        }
+
+        foreach ($sid in $userObject.TokenGroups) {
+            try {
+                $group = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                $resolved = $group.Translate([System.Security.Principal.NTAccount])
+                Write-Host "✔ $resolved ($sid)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "⚠ Could not resolve SID: $sid" -ForegroundColor DarkYellow
+            }
+        }
+
+    } catch {
+        Write-Host "[X] Error retrieving token groups: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckUserDelegation
+# Purpose : Check if a user is configured for Kerberos delegation
+# Notes   : Detects unconstrained, constrained, and RBCD
+# ================================================================
+function fncCheckUserDelegation {
+    param (
+        [string]$user
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Checking delegation for user: $user" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $props = @(
+            "TrustedForDelegation", 
+            "TrustedToAuthForDelegation", 
+            "msDS-AllowedToDelegateTo", 
+            "msDS-AllowedToActOnBehalfOfOtherIdentity"
+        )
+
+        $userObj = Get-ADUser -Server $global:dcHost -Identity $user -Properties $props
+
+        if ($null -eq $userObj) {
+            Write-Host "[-] User not found." -ForegroundColor Red
+            return
+        }
+
+        $delegationSet = $false
+
+        if ($userObj.TrustedForDelegation) {
+            Write-Host "[!] Unconstrained Delegation is enabled." -ForegroundColor Red
+            $delegationSet = $true
+        }
+
+        if ($userObj.TrustedToAuthForDelegation) {
+            Write-Host "[!] Constrained Delegation to services using S4U2Proxy is enabled." -ForegroundColor Yellow
+            $delegationSet = $true
+        }
+
+        if ($userObj.'msDS-AllowedToDelegateTo') {
+            Write-Host "[!] Constrained Delegation to the following SPNs:" -ForegroundColor Yellow
+            foreach ($spn in $userObj.'msDS-AllowedToDelegateTo') {
+                Write-Host "    → $spn"
+            }
+            $delegationSet = $true
+        }
+
+        if ($userObj.'msDS-AllowedToActOnBehalfOfOtherIdentity') {
+            Write-Host "[!] Resource-Based Constrained Delegation (RBCD) is configured." -ForegroundColor Yellow
+            Write-Host "    → DN: $($userObj.'msDS-AllowedToActOnBehalfOfOtherIdentity'.DistinguishedName)"
+            $delegationSet = $true
+        }
+
+        if (-not $delegationSet) {
+            Write-Host "[✓] No delegation settings found for this user." -ForegroundColor Green
+        }
+
+    } catch {
+        Write-Host "[X] Error while checking delegation: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckGroupACLs
+# Purpose : Check weak ACLs on a specified AD group object
+# Notes   : Looks for risky ACEs like GenericAll, WriteDACL, etc.
+# ================================================================
+function fncCheckGroupACLs {
+    param (
+        [string]$group
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Checking weak ACLs on group: $group" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $groupDetails = Get-ADGroup -Server $global:dcHost -Identity $group -Properties DistinguishedName
+
+        if (-not $groupDetails) {
+            Write-Host "[-] Group not found." -ForegroundColor Red
+            return
+        }
+
+        $dn = $groupDetails.DistinguishedName
+        $path = "AD:\$dn"
+
+        if (-not (Test-Path $path)) {
+            Write-Host "[-] Cannot find AD path: $path" -ForegroundColor Red
+            return
+        }
+
+        $acl = Get-Acl -Path $path
+
+        $riskyRights = @(
+            "GenericAll", "GenericWrite", "WriteOwner", "WriteDACL",
+            "CreateChild", "DeleteChild", "WriteProperty", "Self"
+        )
+
+        $weakEntries = @()
+
+        foreach ($entry in $acl.Access) {
+            foreach ($right in $riskyRights) {
+                if ($entry.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::$right)) {
+                    $weakEntries += $entry
+                    break
+                }
+            }
+        }
+
+        $weakEntries = $weakEntries | Sort-Object IdentityReference, ActiveDirectoryRights -Unique
+
+        # Default config suppress check
+        if (-not ($global:config.PSObject.Properties.Name -contains "suppressSelfACE")) {
+            $global:config | Add-Member -MemberType NoteProperty -Name suppressSelfACE -Value $false
+        }
+
+        if ($weakEntries.Count -gt 0) {
+            Write-Host "`n[!] Weak permissions found on group object:" -ForegroundColor Red
+            foreach ($entry in $weakEntries) {
+                if ($global:config.suppressSelfACE -and $entry.IdentityReference -like "*SELF*") {
+                    continue
+                }
+
+                if ($entry.ActiveDirectoryRights -match 'GenericAll|WriteDACL|WriteOwner') {
+                    Write-Host "⚠️  HIGH RISK: $($entry.IdentityReference) - $($entry.ActiveDirectoryRights)" -ForegroundColor Red
+                } else {
+                    Write-Host "    Trustee   : $($entry.IdentityReference)" -ForegroundColor Yellow
+                    Write-Host "    Right     : $($entry.ActiveDirectoryRights)"
+                    Write-Host "    Type      : $($entry.AccessControlType)"
+                    Write-Host "    Inherited : $($entry.IsInherited)"
+                    Write-Host ""
+                }
+            }
+        } else {
+            Write-Host "[✓] No weak ACEs found on group." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[X] Failed to retrieve group ACL: $_" -ForegroundColor Red
+    }
+}
+
+# ================================================================
+# Function: fncCheckComputerACLs
+# Purpose : Check weak ACLs on a specified AD computer object
+# Notes   : Identifies risky ACEs like GenericAll, WriteDACL, etc.
+# ================================================================
+function fncCheckComputerACLs {
+    param (
+        [string]$computer
+    )
+
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "[+] Checking weak ACLs on computer: $computer" -ForegroundColor Cyan
+    Write-Host "====================================="
+
+    try {
+        $computerDetails = Get-ADComputer -Server $global:dcHost -Identity $computer -Properties DistinguishedName
+
+        if (-not $computerDetails) {
+            Write-Host "[-] Computer not found." -ForegroundColor Red
+            return
+        }
+
+        $dn = $computerDetails.DistinguishedName
+        $path = "AD:\$dn"
+
+        if (-not (Test-Path $path)) {
+            Write-Host "[-] Cannot find AD path: $path" -ForegroundColor Red
+            return
+        }
+
+        $acl = Get-Acl -Path $path
+
+        $riskyRights = @(
+            "GenericAll", "GenericWrite", "WriteOwner", "WriteDACL",
+            "CreateChild", "DeleteChild", "WriteProperty", "Self"
+        )
+
+        $weakEntries = @()
+
+        foreach ($entry in $acl.Access) {
+            foreach ($right in $riskyRights) {
+                if ($entry.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::$right)) {
+                    $weakEntries += $entry
+                    break
+                }
+            }
+        }
+
+        $weakEntries = $weakEntries | Sort-Object IdentityReference, ActiveDirectoryRights -Unique
+
+        # Default config suppress check
+        if (-not ($global:config.PSObject.Properties.Name -contains "suppressSelfACE")) {
+            $global:config | Add-Member -MemberType NoteProperty -Name suppressSelfACE -Value $false
+        }
+
+        if ($weakEntries.Count -gt 0) {
+            Write-Host "`n[!] Weak permissions found on computer object:" -ForegroundColor Red
+            foreach ($entry in $weakEntries) {
+                if ($global:config.suppressSelfACE -and $entry.IdentityReference -like "*SELF*") {
+                    continue
+                }
+
+                if ($entry.ActiveDirectoryRights -match 'GenericAll|WriteDACL|WriteOwner') {
+                    Write-Host "⚠️  HIGH RISK: $($entry.IdentityReference) - $($entry.ActiveDirectoryRights)" -ForegroundColor Red
+                } else {
+                    Write-Host "    Trustee   : $($entry.IdentityReference)" -ForegroundColor Yellow
+                    Write-Host "    Right     : $($entry.ActiveDirectoryRights)"
+                    Write-Host "    Type      : $($entry.AccessControlType)"
+                    Write-Host "    Inherited : $($entry.IsInherited)"
+                    Write-Host ""
+                }
+            }
+        } else {
+            Write-Host "[✓] No weak ACEs found on computer." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[X] Failed to retrieve computer ACL: $_" -ForegroundColor Red
+    }
+}
 
 ##################
 ### Menu Logic ###
@@ -1143,9 +2063,8 @@ function fncMainMenu {
             Write-Host ("   Domain Controller: " + $dcHost) -ForegroundColor Yellow
             Write-Host ("              DEBUG MODE ENABLED                       ") -ForegroundColor Blue
             Write-Host $line -ForegroundColor Blue -BackgroundColor Red
-            Write-Host ""
         }
-        
+        Write-Host ""
         Write-Host "Main Menu:" -ForegroundColor Cyan
         Write-Host "  [1] Search for User"
         Write-Host "  [2] Search for Group"
@@ -1170,6 +2089,11 @@ function fncMainMenu {
             Write-Host "  [X]  No Presets Set" -ForegroundColor Red
         }
         Write-Host ""
+        if ($global:config.ADVANCED_MODE) {
+            Write-Host "  [7] Super Secret Menu." -ForegroundColor Red
+        }
+		Write-Host "  [8] The Dumper"
+		Write-Host ""
         Write-Host "9. Settings"
         Write-Host "Q. Exit"
         Write-Host ""
@@ -1207,6 +2131,14 @@ function fncMainMenu {
             }
             '4' {
                 fncPresetRunner
+                Pause
+            }
+            '7' {
+                fncAdvancedMenu
+                Pause
+            }
+            '8' {
+                fncTheDumper
                 Pause
             }
             "9" {
@@ -1379,6 +2311,159 @@ function fncSettingsMenu {
             fncPrintMessage "Invalid option. Please try again." "error"
             Pause
             fncSettingsMenu
+        }
+    }
+}
+
+function fncTheDumper {
+    Write-Host ""
+    Write-Host "==== THE DUMPER ====" -ForegroundColor Cyan
+    Write-Host "[1] Dump Computer Groups"
+    Write-Host "[2] Dump User Groups"
+    Write-Host "[3] Dump Group Members"
+    $choice = Read-Host "Select an option (1 or 2)"
+
+    switch ($choice) {
+        '1' {
+            fncDumpComputerGroups
+        }
+        '2' {
+            fncDumpUserGroups
+        }
+        '3' {
+            fncDumpGroupMembers
+        }
+        default {
+            fncPrintMessage "Invalid option." "error"
+        }
+    }
+}
+
+function fncAdvancedMenu {
+    if (-not $global:config.ADVANCED_MODE) {
+        Write-Host "[X] Advanced Mode is not enabled. Pentester Menu unavailable." -ForegroundColor Red
+        return
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Host "=======================" -ForegroundColor Cyan
+        Write-Host "   Super Secret Menu"
+        Write-Host "=======================" -ForegroundColor Cyan
+        Write-Host ""
+
+        Write-Host "==== DC / Forest Commands ====" -ForegroundColor DarkCyan
+        Write-Host "1.  Get Domain Information"
+        Write-Host "2.  Get Forest Information"
+        Write-Host "3.  List Domain Controllers"
+        Write-Host "4.  Get Trust Relationships"
+        Write-Host "5.  Get FSMO Role Holders"
+        Write-Host ""
+
+        Write-Host "==== User Commands ====" -ForegroundColor DarkGreen
+        Write-Host "6.  Check Weak ACLs on User"
+        Write-Host "7.  Check SACLS on User"
+        Write-Host "8.  Check if User has SPN"
+        Write-Host "9.  Check if User has SID History"
+        Write-Host "10. List User's Token Groups"
+        Write-Host "11. Check if User has Delegation Rights"
+        Write-Host ""
+
+        Write-Host "==== Group Commands ====" -ForegroundColor DarkYellow
+        Write-Host "12. Dump Group Members"
+        Write-Host "13. Check Group Managers"
+        Write-Host "14. Check Group Delegated Permissions"
+        Write-Host ""
+
+        Write-Host "==== Computer Commands ====" -ForegroundColor DarkMagenta
+        Write-Host "15. Dump Computer Group Membership"
+        Write-Host "16. Check Admin Rights on Computer (via ACLs)"
+        Write-Host ""
+
+        Write-Host "==== Other Commands ====" -ForegroundColor DarkMagenta
+        Write-Host "99. Bloodhound Dumper" -ForegroundColor Red
+        Write-Host "==== Misc ====" -ForegroundColor Gray
+        Write-Host "17. Exit Advanced Menu"
+        Write-Host ""
+
+        $choice = Read-Host "Select an option"
+
+        switch ($choice) {
+            # ==== DC Commands ====
+            '1'  { fncGetDomainInfo }
+            '2'  { fncGetForestInfo }
+            '3'  { fncListDomainControllers }
+            '4'  { fncGetTrusts }
+            '5'  { fncGetFSMORoles }
+
+            # ==== User Commands ====
+            '6'  {
+                $user = Read-Host "Enter the username (samAccountName) to check ACLs for"
+                fncCheckWeakACLs -user $user
+            }
+
+            '7'  {
+                $user = Read-Host "Enter the username (samAccountName) to check SACLS for"
+                fncCheckSACLS -user $user
+            }
+
+            '8'  {
+                $user = Read-Host "Enter the username (samAccountName) to check SPNs for"
+                fncCheckSPN -user $user
+            }
+
+            '9'  {
+                $user = Read-Host "Enter the username (samAccountName) to check SID History for"
+                fncCheckSIDHistory -user $user
+            }
+
+            '10' {
+                $user = Read-Host "Enter the username (samAccountName) to list token groups"
+                fncListTokenGroups -user $user
+            }
+
+            '11' {
+                $user = Read-Host "Enter the username (samAccountName) to check delegation settings"
+                fncCheckUserDelegation -user $user
+            }
+
+            '12' {
+                $group = Read-Host "Enter the group name (samAccountName or CN)"
+                fncDumpGroupMembers -group $group
+            }
+
+            '13' {
+                $group = Read-Host "Enter the group name to check for managers"
+                fncCheckGroupManagers -group $group
+            }
+
+            '14' {
+                $group = Read-Host "Enter the group name to check ACLs for"
+                fncCheckGroupACLs -group $group
+            }
+
+            '15' {
+                $computer = Read-Host "Enter the computer name (hostname)"
+                fncDumpComputerGroups -computer $computer
+            }
+
+            '16' {
+                $computer = Read-Host "Enter the computer name (hostname) to check ACLs for"
+                fncCheckComputerACLs -computer $computer
+            }
+
+            '0' {
+                Write-Host "`nExiting Pentester Menu..." -ForegroundColor Magenta
+                break
+            }
+
+            '99' {
+                Write-Host "`nComing soon" -ForegroundColor Magenta
+            }            
+
+            default {
+                Write-Host "`n[!] Invalid option. Please try again." -ForegroundColor Red
+            }
         }
     }
 }
