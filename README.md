@@ -33,17 +33,22 @@ Designed to operate even from **non-domain-joined machines**, provided DNS resol
 ```powershell
 .\interrogator.ps1
 ```
-### Classy Screenshots
-#### Coming Soon caller.
+---
+
+## ✔️ Completed Changes in Dev
+
+- 📤 **Export results to CSV or JSON**  - 
+  Output group/user details for integration into wider reporting or data pipelines.
+
+- ✅ **Highlight Domain Admin accounts**  
+  Clearly flag any accounts that are members of `Domain Admins`, `Enterprise Admins`, or other privileged groups.
+
+- 🔓 **Detect weak permissions on users or groups**  
+  Alert if `GenericAll`, `GenericWrite`, `WriteOwner`, `WriteDACL`, or similar ACEs are found in the user's ACL.
+
 ---
 
 ## 📌 TODO / Roadmap
-
-- ✅ **Highlight Domain Admin accounts**  
-  Clearly flag any accounts that are members of `Domain Admins`, `Enterprise Admins`, or other privileged groups. **<-- Currently In Testing**
-
-- 🔓 **Detect weak permissions on users or groups**  **<-- Currently In Testing**
-  Alert if `GenericAll`, `GenericWrite`, `WriteOwner`, `WriteDACL`, or similar ACEs are found in the user's ACL.
 
 - 📎 **Group nesting and indirect membership**  
   Trace indirect group membership (e.g. via nested groups) to uncover hidden privilege paths.
@@ -53,9 +58,6 @@ Designed to operate even from **non-domain-joined machines**, provided DNS resol
 
 - 🔁 **Interactive "follow path" navigation**  
   Allow selecting a group member and pivoting directly into their object inspection.
-
-- 📤 **Export results to CSV or JSON**  
-  Output group/user details for integration into wider reporting or data pipelines.
 
 - 🪄 **BloodHound-ready mode**  
   Export select objects (e.g., with privileges) in a format readable by BloodHound or compatible with `neo4j`.
