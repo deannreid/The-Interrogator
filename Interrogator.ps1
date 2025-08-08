@@ -645,6 +645,52 @@ function fncGetUserInfo {
                 Write-Host ""
             }
         }
+
+        Write-Host "-------------------------------------"
+
+# Admin account discovery (based on config.adminAccounts)
+if ($global:config.PSObject.Properties.Name -contains 'adminAccounts' -and $global:config.adminAccounts.Count -gt 0) {
+    Write-Host "`n[🔎] Searching for matching admin accounts..." -ForegroundColor Cyan
+
+    $foundAdminAccounts = @()
+    foreach ($suffix in $global:config.adminAccounts) {
+        $pattern = "$($userDetails.SamAccountName)$suffix"
+        try {
+            $adminAccount = Get-ADUser -Server $global:dcHost -Filter "SamAccountName -like '$pattern'" -Properties SamAccountName, DisplayName, Enabled, LastLogonDate, MemberOf
+
+            if ($adminAccount) {
+                $foundAdminAccounts += $adminAccount
+            }
+        } catch {
+            Write-Host "[-] Failed to query admin account pattern: $pattern" -ForegroundColor DarkGray
+        }
+    }
+
+    if ($foundAdminAccounts.Count -gt 0) {
+        foreach ($acc in $foundAdminAccounts) {
+            Write-Host "`n[!] Admin Account Found:" -ForegroundColor Green
+            Write-Host "   SamAccountName : $($acc.SamAccountName)"
+            Write-Host "   Display Name   : $($acc.DisplayName)"
+            Write-Host "   Enabled        : $($acc.Enabled)"
+            Write-Host "   Last Logon     : $($acc.LastLogonDate)"
+
+            # Group memberships
+            if ($acc.MemberOf.Count -gt 0) {
+                Write-Host "   Group Memberships:"
+                foreach ($groupDN in $acc.MemberOf) {
+                    $groupName = ($groupDN -split ',')[0] -replace '^CN='
+                    Write-Host "      - $groupName" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "   Group Memberships: None found." -ForegroundColor DarkGray
+            }
+        }
+    } else {
+        Write-Host "[~] No admin accounts found using defined suffixes." -ForegroundColor DarkGray
+    }
+}
+
+
         Write-Host "-------------------------------------"
     } catch {
         fncPrintMessage "Error retrieving information for user: $user" "error"
@@ -1326,7 +1372,6 @@ function fncDumpGroupMembers {
 # Purpose : Identifies risky ACEs on an AD user object that could allow privilege escalation.
 # Notes   : Flags rights like GenericAll, WriteDACL, and WriteOwner using Get-Acl.
 # ================================================================
-
 function fncCheckWeakACLs {
     param (
         [Microsoft.ActiveDirectory.Management.ADUser]$userDetails
@@ -2063,8 +2108,9 @@ function fncMainMenu {
             Write-Host ("   Domain Controller: " + $dcHost) -ForegroundColor Yellow
             Write-Host ("              DEBUG MODE ENABLED                       ") -ForegroundColor Blue
             Write-Host $line -ForegroundColor Blue -BackgroundColor Red
+            Write-Host ""
         }
-        Write-Host ""
+        
         Write-Host "Main Menu:" -ForegroundColor Cyan
         Write-Host "  [1] Search for User"
         Write-Host "  [2] Search for Group"
@@ -2091,7 +2137,9 @@ function fncMainMenu {
         Write-Host ""
         if ($global:config.ADVANCED_MODE) {
             Write-Host "  [7] Super Secret Menu." -ForegroundColor Red
-        }
+        } else {
+			Write-Host "  [X] Super Secret Menu." -ForegroundColor Red
+		}
 		Write-Host "  [8] The Dumper"
 		Write-Host ""
         Write-Host "9. Settings"
@@ -2134,8 +2182,12 @@ function fncMainMenu {
                 Pause
             }
             '7' {
-                fncAdvancedMenu
-                Pause
+				if ($global:config.ADVANCED_MODE) {
+					fncAdvancedMenu
+					Pause
+				} else {
+					fncPrintMessage "Advanced Mode is Disabled" "warning"
+				}
             }
             '8' {
                 fncTheDumper
