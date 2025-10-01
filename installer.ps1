@@ -458,6 +458,7 @@ function fncInitConfig {
             cloudModulesEnabled = $false
             LAST_KWN_DOM       = ""
             LAST_KWN_USR       = ""
+            USR_ALWAYS_REMEMBER  = $false
             userItems = @{
                 userGroupPreset1 = @("")
             }

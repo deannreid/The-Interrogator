@@ -48,22 +48,22 @@ ___________.__             .___        __                                       
 "@
 
 $BLURBS = @(
-    "	                   	Enumerating services: Like snooping through your neighbor's Wi-Fi, but legal.`n`n",
-    "	                   	Exploring services: The geek's way of saying 'I'm just curious!'`n`n",
-    "	                   	Discovering endpoints: Like a treasure hunt, but with more IP addresses.`n`n",
-    "	                  	Probing the depths: Finding the juicy bits your network's been hiding.`n`n",
-    "	                   	Scanning the landscape: Seeking out vulnerabilities like a digital archaeologist.`n`n",
-    "	                   	Uncovering paths: It's like finding secret doors in your favorite video game.`n`n",
-    "	                   	Shining a flashlight: Because every network has its dark corners.`n`n",
-    "	                   	Looking under the hood: What's powering this thing, anyway?`n`n",
-    "	                   	Investigating ports: Is it a door or a trap? Only one way to find out!`n`n",
-    "	                   	Mapping the maze: The only labyrinth where every wrong turn could be enlightening.`n`n",
-    "	                   	Cracking the code: Every endpoint is a puzzle waiting to be solved.`n`n",
-    "	                   	Poking the firewall: Let's see if it's really as tough as it claims.`n`n",
-    "	                   	Scanning quietly: Shhh… Don't wake up the IDS!`n`n",
-    "	                   	Going undercover: Like a ninja, but with packets.`n`n",
-    "	                   	Breaking down barriers: Who said firewalls are impassable?`n`n",
-    "	                   	Interpreting signals: Turning noise into insight, one packet at a time.`n`n"
+    "	 	Enumerating services: Like snooping through your neighbor's Wi-Fi, but legal.`n`n",
+    "	 	Exploring services: The geek's way of saying 'I'm just curious!'`n`n",
+    "	 	Discovering endpoints: Like a treasure hunt, but with more IP addresses.`n`n",
+    "	  	Probing the depths: Finding the juicy bits your network's been hiding.`n`n",
+    "	  	Scanning the landscape: Seeking out vulnerabilities like a digital archaeologist.`n`n",
+    "	  	Uncovering paths: It's like finding secret doors in your favorite video game.`n`n",
+    "	  	Shining a flashlight: Because every network has its dark corners.`n`n",
+    "		Looking under the hood: What's powering this thing, anyway?`n`n",
+    "     	Investigating ports: Is it a door or a trap? Only one way to find out!`n`n",
+    "	  	Mapping the maze: The only labyrinth where every wrong turn could be enlightening.`n`n",
+    "	  	Cracking the code: Every endpoint is a puzzle waiting to be solved.`n`n",
+    "	  	Poking the firewall: Let's see if it's really as tough as it claims.`n`n",
+    "  		Scanning quietly: Shhh… Don't wake up the IDS!`n`n",
+    "	  	Going undercover: Like a ninja, but with packets.`n`n",
+    "	  	Breaking down barriers: Who said firewalls are impassable?`n`n",
+    "	  	Interpreting signals: Turning noise into insight, one packet at a time.`n`n"
 )
 
 #===========#
@@ -333,35 +333,57 @@ function fncLoadPSDrive {
         @{ }
     }
 
-    # Ask user to reuse last known domain
-    if ($config.LAST_KWN_DOM) {
-        $reuse = Read-Host "Do you want to use the last known domain ($($config.LAST_KWN_DOM))? (Y/N)"
-        $DOMAIN = if ($reuse -match "^(Y|y)") {
-            $config.LAST_KWN_DOM
-        } else {
-            Read-Host "Please enter the expected domain name (e.g., DOMAIN.COM)"
-        }
+    $useAlways = $false
+    $DOMAIN = ""
+    $username = ""
+
+    if ($config.USR_ALWAYS_REMEMBER -eq $true -and $config.LAST_KWN_DOM -and $config.LAST_KWN_USR) {
+        fncPrintMessage "Using saved credentials (USR_ALWAYS_REMEMBER is true)" "debug"
+        $DOMAIN = $config.LAST_KWN_DOM
+        $username = $config.LAST_KWN_USR
+        $useAlways = $true
     } else {
-        $DOMAIN = Read-Host "Please enter the expected domain name (e.g., DOMAIN.COM)"
+        # Ask to reuse domain
+        if ($config.LAST_KWN_DOM) {
+            $reuseDom = Read-Host "Do you want to use the last known domain ($($config.LAST_KWN_DOM))? (Y/N)"
+            $DOMAIN = if ($reuseDom -match "^(Y|y)$|^$") {
+                $config.LAST_KWN_DOM
+            } else {
+                Read-Host "Please enter the expected domain name (e.g., DOMAIN.COM)"
+            }
+        } else {
+            $DOMAIN = Read-Host "Please enter the expected domain name (e.g., DOMAIN.COM)"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($DOMAIN)) {
+            fncPrintMessage "No domain provided. Exiting AD connectivity check." "error"
+            return
+        }
+
+        if ($config.LAST_KWN_USR) {
+            $reuseUser = Read-Host "Do you want to use the last known username ($($config.LAST_KWN_USR))? (Y/N)"
+            $username = if ($reuseUser -match "^(Y|y)$|^$") {
+                $config.LAST_KWN_USR
+            } else {
+                Read-Host "Enter your domain username"
+            }
+        } else {
+            $username = Read-Host "Enter your domain username"
+        }
     }
 
-    if ([string]::IsNullOrWhiteSpace($DOMAIN)) {
-        fncPrintMessage "No domain provided. Exiting AD connectivity check." "error"
-        return
-    }
-
+    # Discover DC
     fncPrintMessage "Attempting nltest /dsgetdc:$DOMAIN" "debug"
     $nltestOutput = nltest /dsgetdc:$DOMAIN 2>&1
     $dcHost = ($nltestOutput | Where-Object { $_ -match 'DC:' }) -replace '.*DC:\s*',''
     $dcHost = $dcHost -replace '^\\\\', ''
-
-    fncPrintMessage "Extracted DC Host: $dcHost" "debug"
 
     if (-not $dcHost) {
         fncPrintMessage "Failed to find a Domain Controller for $DOMAIN." "error"
         return
     }
 
+    fncPrintMessage "Extracted DC Host: $dcHost" "debug"
     fncPrintMessage "Resolving DC hostname: $dcHost" "info"
     $nslookup = nslookup $dcHost 2>&1
     if ($nslookup -match 'Name:|Address:') {
@@ -371,53 +393,59 @@ function fncLoadPSDrive {
         return
     }
 
-    # Prompt for username (reuse optional)
-    if ($config.LAST_KWN_USR) {
-        $reuseUser = Read-Host "Do you want to use the last known username ($($config.LAST_KWN_USR))? (Y/N)"
-        $username = if ($reuseUser -match "^(Y|y)") {
-            $config.LAST_KWN_USR
-        } else {
-            Read-Host "Enter your domain username"
+    # Login retry logic
+    $authenticated = $false
+    $attempts = 0
+    $maxAttempts = 5
+
+    while (-not $authenticated -and $attempts -lt $maxAttempts) {
+        $attempts++
+        $securePassword = Read-Host "Enter password for $DOMAIN\$username" -AsSecureString
+        $cred = New-Object System.Management.Automation.PSCredential ("$DOMAIN\$username", $securePassword)
+
+        try {
+            $driveName = ($DOMAIN.Split('.')[0])
+            fncPrintMessage "Attempting PSDrive mount: $driveName@$dcHost" "debug"
+            New-PSDrive -Name $driveName -PSProvider ActiveDirectory -Root "//RootDSE/" -Credential $cred -Server $dcHost -ErrorAction Stop | Out-Null
+
+            fncPrintMessage "Connected to $DOMAIN successfully." "success"
+            $authenticated = $true
+
+            # Ask to save settings if not already remembered
+            if (-not $useAlways) {
+                $remember = Read-Host "Do you want to remember this configuration and auto-load it in future? (Y/n)"
+                if ($remember -match "^(Y|y)$|^$") {
+                    $config.LAST_KWN_DOM = $DOMAIN
+                    $config.LAST_KWN_USR = $username
+                    $config.USR_ALWAYS_REMEMBER = $true
+                    fncPrintMessage "Settings will be remembered for future use." "info"
+                } else {
+                    fncPrintMessage "Settings not remembered." "info"
+                }
+
+                $config | ConvertTo-Json -Depth 10 | Out-File -FilePath $configPath -Encoding UTF8
+            }
+
+            # Set globals
+            $global:dcHost = $dcHost
+            $global:domainMap = @{ }
+            $global:domainMap[$DOMAIN] = $dcHost
+
+            fncPrintMessage "Global DC host set: $dcHost" "debug"
         }
-    } else {
-        $username = Read-Host "Enter your domain username"
-    }
-
-    $securePassword = Read-Host "Enter your password" -AsSecureString
-    $cred = New-Object System.Management.Automation.PSCredential ("$DOMAIN\$username", $securePassword)
-
-    fncPrintMessage "Attempting PSDrive mount: domain=$DOMAIN, driveName=$($DOMAIN.Split('.')[0]), dcHost=$dcHost" "debug"
-    fncPrintMessage "Mounting AD as PSDrive: $DOMAIN" "info"
-
-    try {
-        $driveName = ($DOMAIN.Split('.')[0])
-        New-PSDrive -Name $driveName -PSProvider ActiveDirectory -Root "//RootDSE/" -Credential $cred -Server $dcHost -ErrorAction Stop | Out-Null
-        fncPrintMessage "Connected to $DOMAIN successfully." "success"
-
-        # Save values to config
-        $config.LAST_KWN_DOM = $DOMAIN
-        $config.LAST_KWN_USR = $username
-
-        $config | ConvertTo-Json -Depth 10 | Out-File -FilePath $configPath -Encoding UTF8
-        fncPrintMessage "Updated config with domain and username." "success"
-
-        # Save globals for rest of session
-        $global:dcHost = $dcHost
-        $global:domainMap = @{}
-        $global:domainMap[$DOMAIN] = $dcHost
-
-        fncPrintMessage "Global DC host set: $dcHost" "debug"
-        fncPrintMessage "domainMap: $($global:domainMap.Keys -join ', ')" "debug"
-    } catch {
-        $msg = $_.Exception.Message
-        $inner = $_.Exception.InnerException
-
-        if ($msg -match 'Authentication failed' -or $inner) {
-            fncPrintMessage "Authentication failed: Username or Password is incorrect." "error"
-        } else {
-            fncPrintMessage "Failed to mount PSDrive for $DOMAIN. Error: $msg" "error"
+        catch {
+            fncPrintMessage "[X] Authentication failed: Username or Password is incorrect." "error"
+            if ($attempts -lt $maxAttempts) {
+                $retry = Read-Host "Try again? (Y/n)"
+                if ($retry -match "^(N|n)$") {
+                    fncPrintMessage "Authentication aborted by user." "warn"
+                    return
+                }
+            } else {
+                fncPrintMessage "[!] Multiple failed login attempts. Your account may become locked out if this continues." "warn"
+                return
+            }
         }
-        Exit 1
     }
 }
 
@@ -463,7 +491,6 @@ function fncUpdateDomainSettings {
     }
 }
 
-## Preset Runner 
 function fncPresetRunner {
     # Ensure userItems is a hashtable
     if ($global:config.userItems -isnot [hashtable]) {
@@ -578,12 +605,12 @@ function fncPresetRunner {
     fncPrintMessage "✔ Completed execution on: $selectedItem" "success"
 }
 
-
 ##############################
 ### Main Application Logic ###
 ##############################
 
-##### user info
+############################################################
+#### Get User Info
 function fncGetUserInfo {
     param (
         [string]$user
@@ -592,28 +619,13 @@ function fncGetUserInfo {
     try {
         # Hardcoded privileged groups
         $builtinPrivilegedGroups = @(
-            # Default Always There Groups
             "Domain Admins",
-            "Domain Operators",
             "Enterprise Admins",
             "Administrators",
             "Schema Admins",
             "Account Operators",
             "Server Operators",
-            "Backup Operators",
-            "Print Operators",
-            "Replicator",
-            "Group Policy Creator Owners"
-
-            # Role Based Groups
-            "DnsAdmins",
-            "DHCP Administrators",
-            "DHCP Users",
-            "Certificate Service DCOM Access",
-            "Enterprise Key Admins",
-            "Key Admins",
-            "Hyper-V Administrators",
-            "Cryptographic Operators"
+            "Backup Operators"
         )
 
         # Optional user-defined privileged groups from config
@@ -622,8 +634,13 @@ function fncGetUserInfo {
             $userDefinedPrivilegedGroups = $global:config.privilegedGroups
         }
 
+        # Combined privilege group list
         $privilegedGroups = $builtinPrivilegedGroups + $userDefinedPrivilegedGroups
+ 
+        # Fuzzy matching patterns
         $privilegedPatterns = @("admin", "super admin", "sudo", "root", "priv", "power", "cyberark", "restricted", "elevateduser", "rdp")
+
+        # Retrieve user details
         $userDetails = Get-ADUser -Server $global:dcHost -Identity $user -Properties DistinguishedName, Name, GivenName, Surname, ObjectClass, SamAccountName, UserPrincipalName, LastLogonDate, Enabled, BadPwdCount, Manager, Secretary, LockedOut
 
         if (-not $userDetails) {
@@ -631,6 +648,7 @@ function fncGetUserInfo {
             return
         }
 
+        # Display basic info
         Write-Host "====================================="
         Write-Host -NoNewline "User: " -ForegroundColor Green; Write-Host "$($userDetails.Name)"
         Write-Host -NoNewline "Name: " -ForegroundColor Green; Write-Host "$($userDetails.GivenName) $($userDetails.Surname)"
@@ -671,8 +689,9 @@ function fncGetUserInfo {
         }
 
         do {
+            Write-Host "===================================================" -ForegroundColor Cyan
             Write-Host ""
-            Write-Host ""
+
             Write-Host "===================================================" -ForegroundColor Cyan
             Write-Host "            🔧 Advanced User Tools Menu           " -ForegroundColor Cyan
             Write-Host "                Target User:" -ForegroundColor Yellow -NoNewline
@@ -680,9 +699,9 @@ function fncGetUserInfo {
             Write-Host "===================================================" -ForegroundColor Cyan
 
             Write-Host ""
-            Write-Host " 1) 🔥 Kerberoast this user *FUNCTIONALITY NOT ADDED YET*" -ForegroundColor Gray
+            Write-Host " 1) 🔥 Kerberoast this user"
             Write-Host " 2) 🧾 AS-REP Roasting check"
-            Write-Host " 3) 🔐 Generate AES Keys (AES128/AES256) (STILL TO IMPLEMENT NXC FUNCTIONALITY)"
+            Write-Host " 3) 🔐 Generate AES Keys (AES128/AES256)"
             Write-Host " 4) 🎭 View SPNs for this user"
             Write-Host ""
             Write-Host " 5) 📔 View Group Memberships"
@@ -690,18 +709,19 @@ function fncGetUserInfo {
             Write-Host " 6) 🎛️ Check Delegation (Unconstrained, Constrained, RBCD)"
             Write-Host " 7) 👑 Find Admin Account Variants (e.g. *_ADM, *_T1)"
             Write-Host ""
-            Write-Host " 8) 🏛️ Check if user owns/modifies privileged groups --- THIS IS A BIT PICKY RIGHT NOW..."
-            Write-Host " 9) 🧾 View Effective Group Token SIDs (STILL TO IMPLEMENT NXC FUNCTIONALITY)"
+            Write-Host " 8) 🏛️ Check if user owns/modifies privileged groups"
+            Write-Host " 9) 🧾 View Effective Group Token SIDs"
             Write-Host "10) 🔁 Reset password path check (who can reset this user)"
+            Write-Host "11) 💉 Pass-The-Hash / Ticket simulation (offline only)"
+            Write-Host "12) 📚 Dump full group DN tree"
             Write-Host ""
-            Write-Host "11) 🥸 Dump Users Groups to CSV"
+
             Write-Host ""
             $userToolChoice = Read-Host "Select an option or press [Enter] to return to main menu"
 
             switch ($userToolChoice) {
                 '1' {
-                   ## TO COMPLETE 
-                   return
+                    fncCheckASRepRoast -user $userDetails.SamAccountName
                 }
                 '2' {
                     try {
@@ -728,13 +748,11 @@ function fncGetUserInfo {
                     }
                     catch {
                         fncPrintMessage "Error while checking AS-REP roast eligibility: $_" "error"
-                    }
-                    Pause           
+                    }                   
                 }
                 "3" {
-                    ## TODO: Once Key Generated attempt to authenticate with controller and show VALID KEY if successful. 
                     try {
-                        Write-Host "`n[🔐] AES Key Generator Selected" -ForegroundColor Cyan
+                        Write-Host "`n[🔐] Kerberos Key Cracker Selected" -ForegroundColor Cyan
                         # Pass the user’s samAccountName and UPN domain to the function
                         $sam = $userDetails.SamAccountName
                         $domainName = ($userDetails.UserPrincipalName -split '@')[-1]
@@ -777,34 +795,11 @@ function fncGetUserInfo {
                         fncPrintMessage "Error in AES Key Generation: $_" "error"
                     }
 
-                    Pause
+                    Read-Host "Press Enter to return to the menu..."
                 }
                 '4' {
-                    try {
-                        # Try as a user
-                        $user = Get-ADUser -Server $global:dcHost -Identity $userDetails.SamAccountName -Properties ServicePrincipalName
-                        if ($user) {
-                            Write-Host "=============================="
-                            Write-Host " SPNs for User: $($user.SamAccountName)" -ForegroundColor Cyan
-                            Write-Host "=============================="
-
-                            if ($user.ServicePrincipalName.Count -gt 0) {
-                                foreach ($spn in $user.ServicePrincipalName) {
-                                    Write-Host "  $spn" -ForegroundColor Yellow
-                                }
-                            } else {
-                                Write-Host "  [~] No SPNs found for this user." -ForegroundColor DarkGray
-                            }
-                            return
-                        }
-                        # If both lookups fail
-                        fncPrintMessage "No user found with identity: $identity" "error"
-
-                    } catch {
-                        fncPrintMessage "An error occurred while retrieving SPNs for: $identity" "error"
-                        fncPrintMessage "$($_.Exception.Message)" "debug"
-                    }
-                    Pause
+                    fncViewSPNs -identity $userDetails.SamAccountName
+                    return
                 }
                 '5' {
                     # Group Membership Breakdown
@@ -905,56 +900,51 @@ function fncGetUserInfo {
                             Write-Host ""
                         }
                     }
-                    Pause
                 }
                 '6' {
-                    ## TO COMPLETE 
-                    return
                 }
                 '7' {
-                    # Admin account discovery (based on config.adminAccounts)
-                    if ($global:config.PSObject.Properties.Name -contains 'adminAccounts' -and $global:config.adminAccounts.Count -gt 0) {
-                        Write-Host "`n[🔎] Searching for matching admin accounts..." -ForegroundColor Cyan
+                # Admin account discovery (based on config.adminAccounts)
+                if ($global:config.PSObject.Properties.Name -contains 'adminAccounts' -and $global:config.adminAccounts.Count -gt 0) {
+                    Write-Host "`n[🔎] Searching for matching admin accounts..." -ForegroundColor Cyan
 
-                        $foundAdminAccounts = @()
-                        foreach ($suffix in $global:config.adminAccounts) {
-                            $pattern = "$($userDetails.SamAccountName)$suffix"
-                            try {
-                                $adminAccount = Get-ADUser -Server $global:dcHost -Filter "SamAccountName -like '$pattern'" -Properties SamAccountName, DisplayName, Enabled, LastLogonDate, MemberOf
+                    $foundAdminAccounts = @()
+                    foreach ($suffix in $global:config.adminAccounts) {
+                        $pattern = "$($userDetails.SamAccountName)$suffix"
+                        try {
+                            $adminAccount = Get-ADUser -Server $global:dcHost -Filter "SamAccountName -like '$pattern'" -Properties SamAccountName, DisplayName, Enabled, LastLogonDate, MemberOf
 
-                                if ($adminAccount) {
-                                    $foundAdminAccounts += $adminAccount
-                                }
-                            } catch {
-                                Write-Host "[-] Failed to query admin account pattern: $pattern" -ForegroundColor DarkGray
+                            if ($adminAccount) {
+                                $foundAdminAccounts += $adminAccount
                             }
+                        } catch {
+                            Write-Host "[-] Failed to query admin account pattern: $pattern" -ForegroundColor DarkGray
                         }
-
-                        if ($foundAdminAccounts.Count -gt 0) {
-                            foreach ($acc in $foundAdminAccounts) {
-                                Write-Host "`n[!] Admin Account Found:" -ForegroundColor Green
-                                Write-Host "   SamAccountName : $($acc.SamAccountName)"
-                                Write-Host "   Display Name   : $($acc.DisplayName)"
-                                Write-Host "   Enabled        : $($acc.Enabled)"
-                                Write-Host "   Last Logon     : $($acc.LastLogonDate)"
-
-                                # Group memberships
-                                if ($acc.MemberOf.Count -gt 0) {
-                                    Write-Host "   Group Memberships:"
-                                    foreach ($groupDN in $acc.MemberOf) {
-                                        $groupName = ($groupDN -split ',')[0] -replace '^CN='
-                                        Write-Host "      - $groupName" -ForegroundColor Yellow
-                                    }
-                                } else {
-                                    Write-Host "   Group Memberships: None found." -ForegroundColor DarkGray
-                                }
-                            }
-                        } else {
-                            Write-Host "[~] No admin accounts found using defined suffixes." -ForegroundColor DarkGray
-                        }
-                        
                     }
-                Pause
+
+                    if ($foundAdminAccounts.Count -gt 0) {
+                        foreach ($acc in $foundAdminAccounts) {
+                            Write-Host "`n[!] Admin Account Found:" -ForegroundColor Green
+                            Write-Host "   SamAccountName : $($acc.SamAccountName)"
+                            Write-Host "   Display Name   : $($acc.DisplayName)"
+                            Write-Host "   Enabled        : $($acc.Enabled)"
+                            Write-Host "   Last Logon     : $($acc.LastLogonDate)"
+
+                            # Group memberships
+                            if ($acc.MemberOf.Count -gt 0) {
+                                Write-Host "   Group Memberships:"
+                                foreach ($groupDN in $acc.MemberOf) {
+                                    $groupName = ($groupDN -split ',')[0] -replace '^CN='
+                                    Write-Host "      - $groupName" -ForegroundColor Yellow
+                                }
+                            } else {
+                                Write-Host "   Group Memberships: None found." -ForegroundColor DarkGray
+                            }
+                        }
+                    } else {
+                        Write-Host "[~] No admin accounts found using defined suffixes." -ForegroundColor DarkGray
+                    }
+                }
                 }
                 '8' {
                     try {
@@ -1028,87 +1018,38 @@ function fncGetUserInfo {
                         fncPrintMessage "Error while checking group management: $_" "error"
                     }
 
-                    Pause
+                    Read-Host "Press Enter to return to the menu..."
                 }
                 '9' {
-                    # TO COMPLETE
-                    return
+
                 }
                 '10' {
-                    try {
-                        Write-Host "🔍 Checking who can reset the password for: $userDetails.SamAccountName" -ForegroundColor Cyan
-
-                        $userObject = Get-ADUser -Server $global:dcHost -Identity $userDetails.SamAccountName -Properties DistinguishedName
-                        if (-not $userObject -or -not $userObject.DistinguishedName) {
-                            fncPrintMessage "User not found or missing DN: $userDetails.SamAccountName" "error"
-                            return
-                        }
-
-                        $dn = $userObject.DistinguishedName
-                        fncPrintMessage "Resolved DN: $dn" "debug"
-
-                        # Safety check: detect if the DN looks like a domain root (not a user DN)
-                        if ($dn -notmatch '^CN=.*?,') {
-                            fncPrintMessage "Warning: The DN does not appear to belong to a user object (DN: $dn)" "debug"
-                        }
-
-                        $directoryEntry = [ADSI]"LDAP://$dn"
-                        $acl = $directoryEntry.ObjectSecurity
-                        fncPrintMessage "Retrieved ACL for: $dn" "debug"
-
-                        $resetRights = @("ResetPassword", "ExtendedRight", "WriteProperty", "GenericAll", "GenericWrite")
-                        fncPrintMessage "Rights being checked: $($resetRights -join ', ')" "debug"
-
-                        $results = @()
-
-                        foreach ($ace in $acl.Access) {
-                            $rightStr = $ace.ActiveDirectoryRights.ToString()
-                            fncPrintMessage "ACE: $($ace.IdentityReference) => $rightStr" "debug"
-
-                            if (
-                                ($resetRights -contains $rightStr) -or
-                                ($rightStr -match "ResetPassword|GenericAll|GenericWrite")
-                            ) {
-                                if ($ace.IdentityReference -notmatch "SELF|NT AUTHORITY|Everyone") {
-                                    fncPrintMessage "MATCH: $($ace.IdentityReference) has $rightStr" "debug"
-                                    $results += [PSCustomObject]@{
-                                        Identity     = $ace.IdentityReference
-                                        AccessType   = $ace.AccessControlType
-                                        Rights       = $ace.ActiveDirectoryRights
-                                        Inherited    = $ace.IsInherited
-                                    }
-                                } else {
-                                    fncPrintMessage "Skipping built-in identity: $($ace.IdentityReference)" "debug"
-                                }
-                            }
-                        }
-
-                        if ($results.Count -eq 0) {
-                            Write-Host "[~] No users/groups found with ResetPassword-like rights." -ForegroundColor DarkGray
-                        } else {
-                            Write-Host "`n[+] The following users/groups can reset the password for $userDetails.SamAccountName :`n" -ForegroundColor Yellow
-                            $results | Sort-Object Identity | Format-Table -AutoSize
-                        }
-
-                    } catch {
-                        fncPrintMessage "Error while checking password reset paths: $_" "error"
-                    }
-                    Pause
+                    fncCheckPasswordResetPaths -targetUser $userDetails.SamAccountName
                 }
                 '11' {
-                    fncDumpUserGroups -username $userDetails.Name
+
+                }
+                '12' {
+
+                }
+                '13' {
+
+                }
+                '14' {
+
                 }
                 default {
                     Write-Host "`nReturning to main menu..." -ForegroundColor Cyan
                     Start-Sleep -Seconds 1
                 }
             }
-        } while ($userToolChoice)
+        } while ($userToolChoice)   # loop until blank input
     } catch {
         fncPrintMessage "Error retrieving information for user: $user" "error"
     }
 }
 
+############################################################
 ##### group Info
 function fncGetGroupInfo {
     param (
@@ -1175,6 +1116,25 @@ function fncGetGroupInfo {
                 Write-Host "Not specified" -ForegroundColor Yellow
             }
 
+            Write-Host "`nMembers:" -ForegroundColor Cyan
+            try {
+                $members = Get-ADGroupMember -Server $dcHost -Identity $groupName -ErrorAction Stop
+                foreach ($member in $members) {
+                    if ($member.objectClass -eq "user") {
+                        try {
+                            $user = Get-ADUser -Server $dcHost -Identity $member.DistinguishedName -Properties GivenName, Surname, SamAccountName -ErrorAction Stop
+                            Write-Host " - $($user.SamAccountName) ($($user.GivenName) $($user.Surname))" -ForegroundColor Green
+                        } catch {
+                            Write-Host " - $($member.SamAccountName) (Details not found)" -ForegroundColor Yellow
+                        }
+                    } else {
+                        Write-Host " - $($member.Name) {$($member.objectClass)}" -ForegroundColor Yellow
+                    }
+                }
+            } catch {
+                Write-Host "Unable to retrieve group members: $_" -ForegroundColor Red
+            }
+
             return $true
         }
 
@@ -1206,87 +1166,53 @@ function fncGetGroupInfo {
         fncPrintMessage "Group '$groupName' was not found in any other domain." "info"
     }
 
-    Write-Host ""
-    Write-Host ""
-    Write-Host "===================================================" -ForegroundColor Cyan
-    Write-Host "            🔧 Advanced Group Tools Menu           " -ForegroundColor Cyan
-    Write-Host "                Target Group:" -ForegroundColor Yellow -NoNewline
-    Write-Host " $groupName" -ForegroundColor Red
-    Write-Host "===================================================" -ForegroundColor Cyan
 
-    Write-Host ""
-    Write-Host " 1) 👤 List All Users (Recursively)" -ForegroundColor Gray
-    Write-Host " 2) 🛡️  Check for Privileged ACLs (GenericAll, WriteDACL)"
-    Write-Host " 3) 🧬 View Nested Group Memberships"
-    Write-Host " 4) 🧪 Check Group Delegations or Shadow Admins"
-    Write-Host ""
-    Write-Host " 5) 🧼 Find Disabled/Expired Users"
-    Write-Host " 6) 🎛️ Check Delegation (Unconstrained, Constrained, RBCD)"
-    Write-Host " 7) 👑 Find Systems this group provides access to"
-    Write-Host " 8) 😶 Dump Group Members to CSV"
-    Write-Host ""
-    $groupToolChoice = Read-Host "Select an option or press [Enter] to return to main menu"
+        Write-Host "===================================================" -ForegroundColor Cyan
+        Write-Host "            🔧 Advanced Group Tools Menu           " -ForegroundColor Cyan
+        Write-Host "===================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Target Group: $groupName" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host " 1) 🧬 View Nested Group Memberships"
+        Write-Host " 2) 👤 List All Users (Recursively)"
+        Write-Host " 3) 🛡️  Check for Privileged ACLs (GenericAll, WriteDACL)"
+        Write-Host " 4) 🚪 Find Members with External Access (e.g. VPN, RDP)"
+        Write-Host " 5) 📜 Show Group Description and Metadata"
+        Write-Host " 6) 📤 Dump Group Members to CSV"
+        Write-Host " 7) 🔍 Search for Users by Pattern (wildcards supported)"
+        Write-Host " 8) 🧪 Check Group Delegations or Shadow Admins"
+        Write-Host " 9) 🧼 Find and Remove Disabled/Expired Users"
+        Write-Host "10) ❌ Identify Orphaned Groups (no members)"
+        Write-Host "11) 🧾 Export Group ACLs and Metadata to File"
+        Write-Host "12) 🚫 Check if Group Has Deny Permissions Assigned"
+        Write-Host "13) ⏰ Check When Group Was Last Modified"
+        Write-Host "14) ↩️ Return to Previous Menu"
+        Write-Host ""
 
-    switch ($groupToolChoice) {
-        '1' {
-                Write-Host "`nMembers:" -ForegroundColor Cyan
-                try {
-                    $members = Get-ADGroupMember -Server $dcHost -Identity $groupName -ErrorAction Stop
-                    foreach ($member in $members) {
-                        if ($member.objectClass -eq "user") {
-                            try {
-                                $user = Get-ADUser -Server $dcHost -Identity $member.DistinguishedName -Properties GivenName, Surname, SamAccountName -ErrorAction Stop
-                                Write-Host " - $($user.SamAccountName) ($($user.GivenName) $($user.Surname))" -ForegroundColor Green
-                            } catch {
-                                Write-Host " - $($member.SamAccountName) (Details not found)" -ForegroundColor Yellow
-                            }
-                        } else {
-                            Write-Host " - $($member.Name) {$($member.objectClass)}" -ForegroundColor Yellow
-                        }
-                    }
-                } catch {
-                    Write-Host "Unable to retrieve group members: $_" -ForegroundColor Red
-                }
-                Pause
-        }
-        '2' {
-        
-            Pause
-        }
-        "3" {
-        
-            Pause
+        $choice = Read-Host "Select an option or press [Enter] to return"
 
+        switch ($choice) {
+            '1'  { fncViewNestedGroups -groupName $groupName }
+            '2'  { fncListGroupUsersRecursive -groupName $groupName }
+            '3'  { fncCheckGroupACLs -groupName $groupName }
+            '4'  { fncFindExternalAccessMembers -groupName $groupName }
+            '5'  { fncShowGroupDetails -groupName $groupName }
+            '6'  { fncExportGroupMembers -groupName $groupName }
+            '7'  { fncSearchUsersInGroup -groupName $groupName }
+            '8'  { fncCheckDelegatedGroupControl -groupName $groupName }
+            '9'  { fncFindDisabledUsersInGroup -groupName $groupName }
+            '10' { fncCheckIfGroupEmpty -groupName $groupName }
+            '11' { fncExportGroupACLReport -groupName $groupName }
+            '12' { fncCheckGroupDenyACLs -groupName $groupName }
+            '13' { fncCheckGroupLastModified -groupName $groupName }
+            default { return }
         }
-        '4' {
-        
-            Pause
 
-        }
-        '5' {
-        
-            Pause
-    
-        }
-        '6' {
-            fncViewNestedGroups -groupName $groupName
-            Pause
-        }
-        '7' {
-        
-            Pause
-        }
-        '8' {
-            fncDumpGroupMembers -groupName $groupName
-        }
-        default {
-            Write-Host "`nReturning to main menu..." -ForegroundColor Cyan
-            Start-Sleep -Seconds 1
-        }
-    }
-    Pause
+        Pause
+   
 }
 
+############################################################
 ### Computer Info
 function fncCheckComputerInfo {
     param (
@@ -1477,9 +1403,223 @@ function fncCheckComputerInfo {
     }
 }
 
-#####################################################################################################################################
-########################################### The Main Goods come below. ##############################################################
-#####################################################################################################################################
+
+
+
+
+
+
+
+
+
+# ================================================================
+# Function: fncCheckASRepRoast
+# Purpose : Check if a user has 'Does not require Kerberos preauthentication' enabled
+# Notes   : Used to identify accounts vulnerable to AS-REP Roasting
+# ================================================================
+function fncCheckASRepRoast {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$user
+    )
+
+
+}
+
+
+# ================================================================
+# Function: fncViewNestedGroups
+# Purpose : Recursively displays all nested group memberships for 
+#           a given AD group, with clear indentation and formatting.
+# Notes   : - Uses Get-ADGroup and Get-ADObject to traverse members.
+#          - Avoids circular references using a visited hashset.
+#          - Indents using '|-' and '|--' to show hierarchy.
+#          - Supports both users and group objects.
+# ================================================================
+function fncViewNestedGroups {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$groupName,
+
+        [int]$level = 0,
+
+        [ref]$visited = $(New-Object System.Collections.Generic.HashSet[string])
+    )
+
+    try {
+        # Get the group object
+        $group = Get-ADGroup -Identity $groupName -Server $global:dcHost -Properties Member
+
+        if (-not $group) {
+            fncPrintMessage "Group not found: $groupName" "error"
+            return
+        }
+
+        # Avoid loops due to circular memberships
+        if ($visited.Value.Contains($group.DistinguishedName)) {
+            return
+        } else {
+            $visited.Value.Add($group.DistinguishedName) | Out-Null
+        }
+
+        # Indentation
+        $indent = "|  " * $level
+        if ($level -eq 0) {
+            Write-Host "$($group.Name)"
+        } else {
+            Write-Host "$indent|-  $($group.Name)"
+        }
+
+        # Check if group has members
+        if (-not $group.Member) {
+            return
+        }
+
+        # Loop through members
+        foreach ($memberDN in $group.Member) {
+            try {
+                $member = Get-ADObject -Identity $memberDN -Server $global:dcHost -Properties objectClass, Name
+
+                if ($member.ObjectClass -eq "group") {
+                    # Recursive call
+                    fncViewNestedGroups -groupName $member.Name -level ($level + 1) -visited $visited
+                } else {
+                    # Print user or non-group
+                    $userIndent = "|  " * ($level + 1)
+                    Write-Host "$userIndent|--  $($member.Name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                fncPrintMessage "Error resolving member: $memberDN" "debug"
+            }
+        }
+    } catch {
+        fncPrintMessage "Error retrieving nested groups for: $groupName" "error"
+    }
+}
+
+# ================================================================
+# Function: fncCheckPasswordResetPaths
+# Purpose : Identify users/groups that can reset the password of a specific user
+# Notes   : Does not use PSDrive; uses ADSI for ACL enumeration
+# ================================================================
+function fncCheckPasswordResetPaths {
+    param (
+        [string]$targetUser
+    )
+
+    try {
+        Write-Host "🔍 Checking who can reset the password for: $targetUser" -ForegroundColor Cyan
+
+        $userObject = Get-ADUser -Server $global:dcHost -Identity $targetUser -Properties DistinguishedName
+        if (-not $userObject -or -not $userObject.DistinguishedName) {
+            fncPrintMessage "User not found or missing DN: $targetUser" "error"
+            return
+        }
+
+        $dn = $userObject.DistinguishedName
+        fncPrintMessage "Resolved DN: $dn" "debug"
+
+        # Safety check: detect if the DN looks like a domain root (not a user DN)
+        if ($dn -notmatch '^CN=.*?,') {
+            fncPrintMessage "Warning: The DN does not appear to belong to a user object (DN: $dn)" "debug"
+        }
+
+        $directoryEntry = [ADSI]"LDAP://$dn"
+        $acl = $directoryEntry.ObjectSecurity
+        fncPrintMessage "Retrieved ACL for: $dn" "debug"
+
+        $resetRights = @("ResetPassword", "ExtendedRight", "WriteProperty", "GenericAll", "GenericWrite")
+        fncPrintMessage "Rights being checked: $($resetRights -join ', ')" "debug"
+
+        $results = @()
+
+        foreach ($ace in $acl.Access) {
+            $rightStr = $ace.ActiveDirectoryRights.ToString()
+            fncPrintMessage "ACE: $($ace.IdentityReference) => $rightStr" "debug"
+
+            if (
+                ($resetRights -contains $rightStr) -or
+                ($rightStr -match "ResetPassword|GenericAll|GenericWrite")
+            ) {
+                if ($ace.IdentityReference -notmatch "SELF|NT AUTHORITY|Everyone") {
+                    fncPrintMessage "MATCH: $($ace.IdentityReference) has $rightStr" "debug"
+                    $results += [PSCustomObject]@{
+                        Identity     = $ace.IdentityReference
+                        AccessType   = $ace.AccessControlType
+                        Rights       = $ace.ActiveDirectoryRights
+                        Inherited    = $ace.IsInherited
+                    }
+                } else {
+                    fncPrintMessage "Skipping built-in identity: $($ace.IdentityReference)" "debug"
+                }
+            }
+        }
+
+        if ($results.Count -eq 0) {
+            Write-Host "[~] No users/groups found with ResetPassword-like rights." -ForegroundColor DarkGray
+        } else {
+            Write-Host "`n[+] The following users/groups can reset the password for $targetUser :`n" -ForegroundColor Yellow
+            $results | Sort-Object Identity | Format-Table -AutoSize
+        }
+
+    } catch {
+        fncPrintMessage "Error while checking password reset paths: $_" "error"
+    }
+}
+
+# ================================================================
+# Function: fncViewSPNs
+# Purpose : Displays Service Principal Names (SPNs) for a user or computer
+# Notes   : Uses Get-ADUser or Get-ADComputer depending on input
+# ================================================================
+function fncViewSPNs {
+    param (
+        [string]$identity
+    )
+
+    try {
+        # Try as a user
+        $user = Get-ADUser -Server $global:dcHost -Identity $identity -Properties ServicePrincipalName
+        if ($user) {
+            Write-Host "=============================="
+            Write-Host " SPNs for User: $($user.SamAccountName)" -ForegroundColor Cyan
+            Write-Host "=============================="
+
+            if ($user.ServicePrincipalName.Count -gt 0) {
+                foreach ($spn in $user.ServicePrincipalName) {
+                    Write-Host "  $spn" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  [~] No SPNs found for this user." -ForegroundColor DarkGray
+            }
+            return
+        }
+
+        # Try as a computer
+        $computer = Get-ADComputer -Server $global:dcHost -Identity $identity -Properties ServicePrincipalName
+        if ($computer) {
+            Write-Host "=============================="
+            Write-Host " SPNs for Computer: $($computer.Name)" -ForegroundColor Cyan
+            Write-Host "=============================="
+
+            if ($computer.ServicePrincipalName.Count -gt 0) {
+                foreach ($spn in $computer.ServicePrincipalName) {
+                    Write-Host "  $spn" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  [~] No SPNs found for this computer." -ForegroundColor DarkGray
+            }
+            return
+        }
+
+        # If both lookups fail
+        fncPrintMessage "No user or computer found with identity: $identity" "error"
+
+    } catch {
+        fncPrintMessage "An error occurred while retrieving SPNs for: $identity" "error"
+        fncPrintMessage "$($_.Exception.Message)" "debug"
+    }
+}
 
 # ================================================================
 # Function: fncDumpUserGroups
@@ -1722,76 +1862,6 @@ function fncDumpGroupMembers {
     }
     catch {
         Write-Host "[-] Error: $_" -ForegroundColor Red
-    }
-}
-
-# ================================================================
-# Function: fncViewNestedGroups
-# Purpose : Recursively displays all nested group memberships for 
-#           a given AD group, with clear indentation and formatting.
-# Notes   : - Uses Get-ADGroup and Get-ADObject to traverse members.
-#          - Avoids circular references using a visited hashset.
-#          - Indents using '|-' and '|--' to show hierarchy.
-#          - Supports both users and group objects.
-# ================================================================
-function fncViewNestedGroups {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$groupName,
-
-        [int]$level = 0,
-
-        [ref]$visited = $(New-Object System.Collections.Generic.HashSet[string])
-    )
-
-    try {
-        # Get the group object
-        $group = Get-ADGroup -Identity $groupName -Server $global:dcHost -Properties Member
-
-        if (-not $group) {
-            fncPrintMessage "Group not found: $groupName" "error"
-            return
-        }
-
-        # Avoid loops due to circular memberships
-        if ($visited.Value.Contains($group.DistinguishedName)) {
-            return
-        } else {
-            $visited.Value.Add($group.DistinguishedName) | Out-Null
-        }
-
-        # Indentation
-        $indent = "|  " * $level
-        if ($level -eq 0) {
-            Write-Host "$($group.Name)"
-        } else {
-            Write-Host "$indent|-  $($group.Name)"
-        }
-
-        # Check if group has members
-        if (-not $group.Member) {
-            return
-        }
-
-        # Loop through members
-        foreach ($memberDN in $group.Member) {
-            try {
-                $member = Get-ADObject -Identity $memberDN -Server $global:dcHost -Properties objectClass, Name
-
-                if ($member.ObjectClass -eq "group") {
-                    # Recursive call
-                    fncViewNestedGroups -groupName $member.Name -level ($level + 1) -visited $visited
-                } else {
-                    # Print user or non-group
-                    $userIndent = "|  " * ($level + 1)
-                    Write-Host "$userIndent|--  $($member.Name)" -ForegroundColor DarkGray
-                }
-            } catch {
-                fncPrintMessage "Error resolving member: $memberDN" "debug"
-            }
-        }
-    } catch {
-        fncPrintMessage "Error retrieving nested groups for: $groupName" "error"
     }
 }
 
@@ -2510,13 +2580,493 @@ function fncCheckComputerACLs {
     }
 }
 
+# ================================================================
+# Function: fncGetPasswordPolicy
+# Purpose : Displays default and FGPP password policy for current user
+# Notes   : Uses Get-ADDefaultDomainPasswordPolicy + Get-ADUserResultantPasswordPolicy
+# ================================================================
+function fncGetPasswordPolicy {
+    Write-Host "`n[+] Retrieving password policy..." -ForegroundColor Cyan
+    Write-Host "==============================================="
+
+    try {
+        # Ensure AD module
+        if (-not (Get-Module -Name ActiveDirectory)) {
+            Import-Module ActiveDirectory -ErrorAction Stop
+        }
+
+        # Get user and domain from DC host and identity
+        $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $domain = ($global:dcHost -split '\.')[0].ToUpper()
+
+        Write-Host "[*] Connected Domain : $domain"
+        Write-Host "[*] Current User     : $user"
+        Write-Host "-----------------------------------------------"
+
+        # Default domain password policy
+        $defaultPolicy = Get-ADDefaultDomainPasswordPolicy -Server $global:dcHost
+        if ($null -ne $defaultPolicy) {
+            Write-Host "`n[✓] Default Domain Password Policy" -ForegroundColor Green
+            Write-Host "-----------------------------------------------"
+            Write-Host "Minimum Password Length      : $($defaultPolicy.MinPasswordLength)"
+            Write-Host "Password History Count       : $($defaultPolicy.PasswordHistoryCount)"
+            Write-Host "Maximum Password Age         : $($defaultPolicy.MaxPasswordAge.Days) days"
+            Write-Host "Minimum Password Age         : $($defaultPolicy.MinPasswordAge.Days) days"
+            Write-Host "Password Complexity Enabled  : $($defaultPolicy.ComplexityEnabled)"
+            Write-Host "Reversible Encryption Allowed: $($defaultPolicy.ReversibleEncryptionEnabled)"
+            Write-Host "Lockout Threshold            : $($defaultPolicy.LockoutThreshold)"
+            Write-Host "Lockout Duration             : $($defaultPolicy.LockoutDuration.TotalMinutes) minutes"
+            Write-Host "Lockout Observation Window   : $($defaultPolicy.LockoutObservationWindow.TotalMinutes) minutes"
+        }
+
+        # Check if FGPP applies to current user
+        $samAccount = $user.Split('\')[-1]
+        $fgpp = Get-ADUserResultantPasswordPolicy -Identity $samAccount -Server $global:dcHost -ErrorAction SilentlyContinue
+
+        if ($fgpp) {
+            Write-Host "`n[✓] Fine-Grained Password Policy (FGPP) Applies" -ForegroundColor Cyan
+            Write-Host "-----------------------------------------------"
+            Write-Host "Minimum Password Length      : $($fgpp.MinPasswordLength)"
+            Write-Host "Password History Count       : $($fgpp.PasswordHistoryCount)"
+            Write-Host "Maximum Password Age         : $($fgpp.MaxPasswordAge.Days) days"
+            Write-Host "Minimum Password Age         : $($fgpp.MinPasswordAge.Days) days"
+            Write-Host "Password Complexity Enabled  : $($fgpp.ComplexityEnabled)"
+            Write-Host "Reversible Encryption Allowed: $($fgpp.ReversibleEncryptionEnabled)"
+            Write-Host "Lockout Threshold            : $($fgpp.LockoutThreshold)"
+            Write-Host "Lockout Duration             : $($fgpp.LockoutDuration.TotalMinutes) minutes"
+            Write-Host "Lockout Observation Window   : $($fgpp.LockoutObservationWindow.TotalMinutes) minutes"
+        } else {
+            Write-Host "`n[✓] No Fine-Grained Password Policy found for this user." -ForegroundColor DarkGray
+        }
+
+    } catch {
+        Write-Host "[X] Failed to retrieve password policy: $_" -ForegroundColor Red
+    }
+
+    Write-Host ""
+    Read-Host -Prompt "Press [Enter] to return to the menu"
+}
+
+# ================================================================
+# Function: fncGetGroupsByPattern
+# Purpose : Search AD groups by name pattern and summarise members
+# Notes   : Includes group owner, deputy, and description output
+# ================================================================
+function fncGetGroupsByPattern {
+    param(
+        [string]$dcHost = $null
+    )
+
+    $raw = Read-Host "Enter group name pattern (e.g. *Admin or Admin*)"
+    if (-not $raw) {
+        Write-Host "[!] No pattern entered. Aborting." -ForegroundColor Yellow
+        return
+    }
+
+    $pattern = if ($raw -notmatch '\*') { "*$raw*" } else { $raw }
+    fncPrintMessage "Search pattern: $pattern" "debug"
+
+    $params = @{}
+    if ($dcHost) {
+        $params['Server'] = $dcHost
+        fncPrintMessage "Using DC host override: $dcHost" "debug"
+    }
+
+    try {
+        fncPrintMessage "Running Get-ADGroup query..." "debug"
+        $groups = Get-ADGroup -Filter "Name -like '$pattern'" -Properties Description, ManagedBy @params | Sort-Object Name
+
+        if (-not $groups) {
+            Write-Host "[i] No groups matched '$pattern'." -ForegroundColor Yellow
+            return
+        }
+
+        fncPrintMessage ("Matched {0} group(s) using pattern: {1}" -f $groups.Count, $pattern) "debug"
+        Write-Host "`n[=] Processing $($groups.Count) group(s)..." -ForegroundColor Cyan
+
+        $uniqueUsers = New-Object 'System.Collections.Generic.HashSet[string]'
+        $groupRows   = New-Object 'System.Collections.Generic.List[object]'
+        $dupTotal = 0
+        $emptyGroups = 0
+
+        $total = $groups.Count
+        $i = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+        foreach ($g in $groups) {
+            $i++
+            $percent = [math]::Round(($i / $total) * 100)
+            Write-Progress -Activity "Processing Groups..." -Status "[$i/$total] $($g.Name)" -PercentComplete $percent
+
+            fncPrintMessage "Processing group: $($g.Name)" "debug"
+            try {
+                $gm = @(Get-ADGroupMember -Identity $g.DistinguishedName -Recursive -ErrorAction Stop @params)
+                fncPrintMessage (" -> Get-ADGroupMember returned {0} object(s)" -f $gm.Count) "debug"
+            } catch {
+                Write-Host "[!] Failed to get members for group: $($g.Name)" -ForegroundColor Yellow
+                fncPrintMessage $_.Exception.Message "debug"
+                continue
+            }
+
+            $userMembers = @($gm | Where-Object { $_.objectClass -eq 'user' })
+            fncPrintMessage " -> Filtered to $($userMembers.Count) user(s)" "debug"
+
+            if ($userMembers.Count -eq 0) {
+                $emptyGroups++
+                fncPrintMessage " -> Group is empty (0 user members)." "debug"
+            }
+
+            $dupTotal += $userMembers.Count
+
+            foreach ($u in $userMembers) {
+                try {
+                    $dn = $u | Select-Object -ExpandProperty DistinguishedName
+                    if ($dn) { [void]$uniqueUsers.Add([string]$dn) }
+                } catch {
+                    fncPrintMessage " -> Failed to extract DN: $($_.Exception.Message)" "debug"
+                }
+            }
+
+            # Owner and Deputy lookup
+            $ownerName = "Unassigned"
+            $deputyName = "Unassigned"
+            if ($g.ManagedBy) {
+                try {
+                    $manager = Get-ADUser -Identity $g.ManagedBy -Properties GivenName, Surname, Manager @params
+                    $ownerName = "$($manager.GivenName) $($manager.Surname)"
+                    if ($manager.Manager) {
+                        $deputy = Get-ADUser -Identity $manager.Manager -Properties GivenName, Surname @params
+                        $deputyName = "$($deputy.GivenName) $($deputy.Surname)"
+                    }
+                } catch {
+                    fncPrintMessage "Failed to retrieve owner/deputy: $($_.Exception.Message)" "debug"
+                }
+            }
+
+            # Determine if high privilege group (same as user function)
+            $highPriv = ($g.Name -match 'admin|domain|enterprise|privileged|schema|account|backup|group policy|dns' -or
+                         $g.DistinguishedName -match 'OU=Admin|OU=Privileged|OU=Tier|OU=High|OU=Protected')
+
+            $groupRows.Add([PSCustomObject]@{
+                GroupID      = $g.Name
+                UserCount    = $userMembers.Count
+                Owner        = $ownerName
+                Deputy       = $deputyName
+                Description  = $g.Description
+                HighPriv     = $highPriv
+            }) | Out-Null
+        }
+
+        $sw.Stop()
+        Write-Progress -Activity "Done" -Completed
+
+        Write-Host ("[✓] Total groups matched: {0}" -f $total) -ForegroundColor Green
+        Write-Host ("[=] Total user memberships (with duplicates): {0}" -f $dupTotal) -ForegroundColor Cyan
+        Write-Host ("[=] Total unique users:                       {0}" -f $uniqueUsers.Count) -ForegroundColor Cyan
+        Write-Host ("[=] Groups with zero user members:            {0}" -f $emptyGroups) -ForegroundColor Yellow
+
+        fncPrintMessage "UniqueUsers Count: $($uniqueUsers.Count)" "debug"
+        fncPrintMessage "GroupRows Count:   $($groupRows.Count)" "debug"
+        fncPrintMessage "Duplicates Count:  $dupTotal" "debug"
+        fncPrintMessage "Empty Groups:      $emptyGroups" "debug"
+
+        if ($total -le 20) {
+            do {
+                Write-Host "[=] Matching Groups (Select one to view details)" -ForegroundColor Cyan
+
+                $indexed = $groupRows | Select-Object @{Name="Index";Expression={[array]::IndexOf($groupRows, $_)}}, *
+                $indexed | ForEach-Object {
+                    $color = if ($_.HighPriv) { "Magenta" } else { "White" }
+                    Write-Host ("[{0}] {1,-30} | Users: {2,-3} | Owner: {3,-20} | Deputy: {4,-20} | {5}" -f
+                        $_.Index, $_.GroupID, $_.UserCount, $_.Owner, $_.Deputy, $_.Description) -ForegroundColor $color
+                }
+
+                $selection = Read-Host "`nEnter index of group to view details, or press [Enter] to return"
+                if ($selection -match '^\d+$' -and [int]$selection -lt $groupRows.Count) {
+                    $selectedGroup = $groupRows[$selection].GroupID
+                    fncPrintMessage "Selected group: $selectedGroup — calling fncGetGroupInfo" "debug"
+                    fncGetGroupInfo -GroupName $selectedGroup
+                    Write-Host ""
+                    Read-Host -Prompt "Press [Enter] to return to group list"
+                } elseif ($selection -eq '') {
+                    break
+                } else {
+                    Write-Host "[!] Invalid selection." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 1.5
+                }
+            } while ($true)
+        } else {
+            Write-Host "[i] Too many groups to show detailed table. Use a narrower pattern." -ForegroundColor Yellow
+        }
+
+    } catch {
+        Write-Host "[X] Error in fncGetGroupsByPattern: $($_.Exception.Message)" -ForegroundColor Red
+        if ($global:config.DEBUG_MODE -eq $true) {
+            Write-Host ($_.Exception | Format-List * -Force | Out-String) -ForegroundColor DarkGray
+            Write-Host ("[DEBUG] StackTrace:`n{0}" -f ($_.ScriptStackTrace)) -ForegroundColor DarkGray
+        }
+    }
+}
+
+# ================================================================
+# Function: fncGenerateKerberosAESKeys
+# Purpose : Generate AES128/256 Kerberos keys for an AD user or host account
+# Notes   : Supports current or custom domain, manual or wordlist input
+# ================================================================
+function fncGenerateKerberosAESKeys {
+    param (
+        [string]$domain,
+        [string]$username,
+        [string]$password,
+        [bool]$isHost = $false
+    )
+
+    # Constants
+    $AES256_CONSTANT = [byte[]](0x6B,0x65,0x72,0x62,0x65,0x72,0x6F,0x73,0x7B,0x9B,0x5B,0x2B,0x93,0x13,0x2B,0x93,0x5C,0x9B,0xDC,0xDA,0xD9,0x5C,0x98,0x99,0xC4,0xCA,0xE4,0xDE,0xE6,0xD6,0xCA,0xE4)
+    $AES128_CONSTANT = $AES256_CONSTANT[0..15]
+    $IV = [byte[]](0..15 | ForEach-Object { 0x00 })
+    $ITERATION = 4096
+
+    try {
+        # Salt
+        if ($isHost) {
+            $hostname = $username.TrimEnd('$').ToLower()
+            $salt = "$domain" + "host" + "$hostname.$($domain.ToLower())"
+        } else {
+            $salt = "$domain$username"
+        }
+
+        fncPrintMessage "[*] Kerberos Salt: $salt" "info"
+
+        $saltBytes = [System.Text.Encoding]::UTF8.GetBytes($salt)
+
+        try {
+            $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes($password)
+        } catch {
+            fncPrintMessage "[-] Failed to encode password." "error"
+            return
+        }
+
+        # Derive AES256 key using PBKDF2
+        $aes256PBKDF2 = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($passwordBytes, $saltBytes, $ITERATION)
+        $aes256Key = $aes256PBKDF2.GetBytes(32)
+        $aes128Key = $aes256Key[0..15]
+
+        # AES 256
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Mode = "CBC"
+        $aes.Padding = "None"
+        $aes.Key = $aes256Key
+        $aes.IV = $IV
+        $encryptor = $aes.CreateEncryptor()
+        $key1 = $encryptor.TransformFinalBlock($AES256_CONSTANT, 0, $AES256_CONSTANT.Length)
+
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Mode = "CBC"
+        $aes.Padding = "None"
+        $aes.Key = $aes256Key
+        $aes.IV = $IV
+        $encryptor2 = $aes.CreateEncryptor()
+        $key2 = $encryptor2.TransformFinalBlock($key1, 0, $key1.Length)
+
+        $aes256Final = $key1[0..15] + $key2[0..15]
+        $aes256Hex = ($aes256Final | ForEach-Object { $_.ToString("X2") }) -join ""
+
+        # AES 128
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Mode = "CBC"
+        $aes.Padding = "None"
+        $aes.Key = $aes128Key
+        $aes.IV = $IV
+        $encryptor128 = $aes.CreateEncryptor()
+        $aes128Final = $encryptor128.TransformFinalBlock($AES128_CONSTANT, 0, $AES128_CONSTANT.Length)
+        $aes128Hex = ($aes128Final | ForEach-Object { $_.ToString("X2") }) -join ""
+
+        # Output
+        Write-Host "`n[+] AES256 Key: $aes256Hex" -ForegroundColor Green
+        Write-Host "[+] AES128 Key: $aes128Hex" -ForegroundColor Yellow
+        Write-Host "[X] Key is not valid for using as a Kerberos Ticket" -ForegroundColor Red
+    }
+    catch {
+        fncPrintMessage "[-] AES key generation failed: $_" "error"
+    }
+}
+
+# ================================================================
+# Function: fncCheckComputerAccess
+# Purpose : Given a TXT of hostnames (one per line), resolve IP,
+#           RDP/SSH status, and pull detailed AD computer info.
+# Notes   : Each line in the TXT must be a hostname
+# ================================================================
+function fncCheckComputerAccess {
+    Add-Type -AssemblyName System.Windows.Forms
+
+    $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    $OpenFileDialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
+    $OpenFileDialog.Filter = "Text files (*.txt)|*.txt"
+    $OpenFileDialog.Title = "Select TXT of Hostnames"
+    
+    if ($OpenFileDialog.ShowDialog() -ne "OK") {
+        fncPrintMessage "Cancelled file selection." "warn"
+        return
+    }
+
+    $txtPath = $OpenFileDialog.FileName
+    if (-not (Test-Path $txtPath)) {
+        fncPrintMessage "File not found: $txtPath" "error"
+        return
+    }
+
+    fncPrintMessage "Loading hostnames from TXT: $txtPath" "debug"
+
+    try {
+        $computers = Get-Content $txtPath | Where-Object { $_.Trim() -ne "" }
+        fncPrintMessage "Imported $($computers.Count) host entries from TXT." "debug"
+    } catch {
+        fncPrintMessage "Failed to read TXT: $_" "error"
+        return
+    }
+
+    # 🔑 Show current domain info
+    try {
+        $domainCtx = (Get-ADDomain -Server $global:dcHost).DNSRoot
+        fncPrintMessage "Using DC host: $global:dcHost (Domain: $domainCtx)" "debug"
+    } catch {
+        fncPrintMessage "Could not resolve domain context for $global:dcHost ($_)" "warn"
+    }
+
+    $output = @()
+
+    foreach ($hostname in $computers) {
+        $hostname = $hostname.Trim()
+        if (-not $hostname) { continue }
+
+        Write-Host "`n🔍 Checking: $hostname" -ForegroundColor Cyan
+        fncPrintMessage "Starting checks for $hostname" "debug"
+
+        # DNS resolution
+        $ip = try {
+            $resolved = [System.Net.Dns]::GetHostAddresses($hostname)[0].IPAddressToString
+            fncPrintMessage "$hostname resolved to $resolved" "debug"
+            $resolved
+        } catch {
+            fncPrintMessage "DNS resolution failed for $hostname" "debug"
+            "Resolution Failed"
+        }
+
+        # Port status
+        $rdpOpen = $false
+        $sshOpen = $false
+
+        if ($ip -ne "Resolution Failed") {
+            try {
+                $rdpOpen = Test-NetConnection -ComputerName $ip -Port 3389 -InformationLevel Quiet
+                fncPrintMessage "RDP port 3389 on $hostname ($ip) open: $rdpOpen" "debug"
+
+                $sshOpen = Test-NetConnection -ComputerName $ip -Port 22 -InformationLevel Quiet
+                fncPrintMessage "SSH port 22 on $hostname ($ip) open: $sshOpen" "debug"
+            } catch {
+                fncPrintMessage "Connection test failed for $ip" "debug"
+            }
+        }
+
+        # AD lookup
+        $adGroups = "N/A"
+        $owner = "N/A"
+        $site = ""
+        $dnsName = ""
+        $canonical = ""
+        $os = ""
+        $osVer = ""
+        $spack = ""
+        $desc = ""
+
+        try {
+    fncPrintMessage "Querying AD for $hostname on $global:dcHost" "debug"
+
+    $adComputer = Get-ADComputer -Server $global:dcHost -Identity $hostname -Properties `
+        MemberOf, ManagedBy, CanonicalName, Description, DNSHostName, OperatingSystem, OperatingSystemVersion, OperatingSystemServicePack
+
+    if ($adComputer) {
+        fncPrintMessage "AD object found for $hostname" "debug"
+
+        # Get groups
+        if ($adComputer.MemberOf) {
+            $groupNames = $adComputer.MemberOf | ForEach-Object {
+                ($_ -split ',')[0] -replace '^CN='
+            }
+            $adGroups = $groupNames -join '; '
+            fncPrintMessage "$hostname is a member of groups: $adGroups" "debug"
+        }
+
+        # Owner
+        if ($adComputer.ManagedBy) {
+            $ownerObj = Get-ADUser -Server $global:dcHost -Identity $adComputer.ManagedBy -Properties DisplayName, SamAccountName
+            if ($ownerObj) {
+                $owner = "$($ownerObj.DisplayName) ($($ownerObj.SamAccountName))"
+                fncPrintMessage "Device owner for $hostname resolved to $owner" "debug"
+            }
+        }
+
+        # Other attributes
+        $dnsName   = $adComputer.DNSHostName
+        $canonical = $adComputer.CanonicalName
+        $desc      = $adComputer.Description
+        $os        = $adComputer.OperatingSystem
+        $osVer     = $adComputer.OperatingSystemVersion
+        $spack     = $adComputer.OperatingSystemServicePack
+
+        fncPrintMessage "OS: $os ($osVer) SP: $spack" "debug"
+    }
+} catch {
+    fncPrintMessage "AD lookup failed for $hostname ($_)" "debug"
+}
+
+
+        # Add result row
+        $output += [PSCustomObject]@{
+            Hostname                         = $hostname
+            IPAddress                        = $ip
+            'RDP Port Open'                  = $rdpOpen
+            'SSH Port Open'                  = $sshOpen
+            DNS_Name                         = $dnsName
+            Canonical_Name                   = $canonical
+            Site                             = $site
+            Description                      = $desc
+            Operating_System                 = $os
+            OS_Version                       = $osVer
+            Service_Pack                     = $spack
+            'AD Groups'                      = $adGroups
+            'Device Owner'                   = $owner
+            'The Interrogator Device Dumper' = '✅'
+        }
+    }
+
+    # Show results to screen
+    fncPrintMessage "Displaying results on screen..." "debug"
+    $output | Sort-Object Hostname | Format-Table -AutoSize
+
+    # Export
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $outfile = "$PSScriptRoot\ComputerAccess_$timestamp.csv"
+    fncPrintMessage "Exporting results to $outfile" "debug"
+
+    $output | Export-Csv -NoTypeInformation -Path $outfile
+
+    Write-Host "`n✅ Scan complete. Results saved to: $outfile" -ForegroundColor Green
+}
+
+
+
+
+
+
 ##################
 ### Menu Logic ###
 ##################
 function fncMainMenu {
     while ($true) {
-        $line = "=" * 120
-
+        $line = "=" * 70
         $user = $global:config.LAST_KWN_USR
         $domain = $global:config.LAST_KWN_DOM
         $dcHost = $global:domainMap[$domain]
@@ -2525,25 +3075,26 @@ function fncMainMenu {
             Clear-Host
             fncPrintBanner
             Write-Host $line -ForegroundColor DarkCyan
-            Write-Host ("                          Welcome! You are logged in as: " + $user) -ForegroundColor Green
-            Write-Host ("                              Current Domain: " + $domain) -ForegroundColor Yellow
-            Write-Host ("                           Domain Controller: " + $dcHost) -ForegroundColor Yellow
+            Write-Host ("   Welcome! You are logged in as: " + $user) -ForegroundColor Green
+            Write-Host ("   Current Domain: " + $domain) -ForegroundColor Yellow
+            Write-Host ("   Domain Controller: " + $dcHost) -ForegroundColor Yellow
             Write-Host $line -ForegroundColor DarkCyan
             Write-Host ""
         } else {
-            fncPrintBanner
             Write-Host $line -ForegroundColor Blue -BackgroundColor Red
-            Write-Host ("                          Welcome! You are logged in as: " + $user) -ForegroundColor Green
-            Write-Host ("                              Current Domain: " + $domain) -ForegroundColor Yellow
-            Write-Host ("                           Domain Controller: " + $dcHost) -ForegroundColor Yellow
-            Write-Host ("                                DEBUG MODE ENABLED                       ") -ForegroundColor Blue
+            Write-Host ("   Welcome! You are logged in as: " + $user) -ForegroundColor Green
+            Write-Host ("   Current Domain: " + $domain) -ForegroundColor Yellow
+            Write-Host ("   Domain Controller: " + $dcHost) -ForegroundColor Yellow
+            Write-Host ("              DEBUG MODE ENABLED                       ") -ForegroundColor Blue
             Write-Host $line -ForegroundColor Blue -BackgroundColor Red
             Write-Host ""
-        }       
+        }
+        
         Write-Host "Main Menu:" -ForegroundColor Cyan
-        Write-Host "  [1] Search for User"
-        Write-Host "  [2] Search for Group"
-        Write-Host "  [3] Search for Computer"
+        Write-Host "  [ 1] Search for User"
+        Write-Host "  [ 2] Search for Group"
+        Write-Host "  [22]     Search Wildcard Group"
+        Write-Host "  [ 3] Search for Computer"
         Write-Host ""
         # Display Preset Menu Option if any exist
         if ($global:config.userItems -and $global:config.userItems.Count -gt 0) {
@@ -2597,6 +3148,12 @@ function fncMainMenu {
                 }
                 Pause
             }
+            '22' {
+                fncPrintBanner
+                Write-Host "`n[>] Running Group Search by Pattern..." -ForegroundColor Green
+                fncGetGroupsByPattern -dcHost $global:dcHost
+                Pause
+            }
             "3" {
                 $device = Read-Host "Enter the device hostname"
                 if (![string]::IsNullOrWhiteSpace($device)) {
@@ -2606,6 +3163,7 @@ function fncMainMenu {
                 }
                 Pause
             }
+
             '4' {
                 fncPresetRunner
                 Pause
@@ -2806,12 +3364,18 @@ function fncTheDumper {
 
     switch ($choice) {
         '1' {
+			Clear-Host
+			fncPrintBanner	
             fncDumpComputerGroups
         }
         '2' {
+			Clear-Host
+			fncPrintBanner			
             fncDumpUserGroups
         }
         '3' {
+			Clear-Host
+			fncPrintBanner	
             fncDumpGroupMembers
         }
         default {
@@ -2827,7 +3391,8 @@ function fncAdvancedMenu {
     }
 
     while ($true) {
-        Clear-Host
+		Clear-Host
+		fncPrintBanner	
         Write-Host "=======================" -ForegroundColor Cyan
         Write-Host "   Super Secret Menu"
         Write-Host "=======================" -ForegroundColor Cyan
@@ -2839,103 +3404,153 @@ function fncAdvancedMenu {
         Write-Host "3.  List Domain Controllers"
         Write-Host "4.  Get Trust Relationships"
         Write-Host "5.  Get FSMO Role Holders"
+		Write-Host "6.  Get Current Domain Password Policy"
         Write-Host ""
 
         Write-Host "==== User Commands ====" -ForegroundColor DarkGreen
-        Write-Host "6.  Check Weak ACLs on User"
-        Write-Host "7.  Check SACLS on User"
-        Write-Host "8.  Check if User has SPN"
-        Write-Host "9.  Check if User has SID History"
-        Write-Host "10. List User's Token Groups"
-        Write-Host "11. Check if User has Delegation Rights"
+        Write-Host "7.  Check Weak ACLs on User"
+        Write-Host "8.  Check SACLS on User"
+        Write-Host "9.  Check if User has SPN"
+        Write-Host "10.  Check if User has SID History"
+        Write-Host "11. List User's Token Groups"
+        Write-Host "12. Check if User has Delegation Rights"
         Write-Host ""
 
         Write-Host "==== Group Commands ====" -ForegroundColor DarkYellow
-        Write-Host "12. Dump Group Members"
-        Write-Host "13. Check Group Managers"
-        Write-Host "14. Check Group Delegated Permissions"
+        Write-Host "13. Dump Group Members"
+        Write-Host "14. Check Group Managers"
+        Write-Host "15. Check Group Delegated Permissions"
         Write-Host ""
 
         Write-Host "==== Computer Commands ====" -ForegroundColor DarkMagenta
-        Write-Host "15. Dump Computer Group Membership"
-        Write-Host "16. Check Admin Rights on Computer (via ACLs)"
+        Write-Host "16. Dump Computer Group Membership"
+        Write-Host "17. Bulk Dump Computer Information."
+        Write-Host "18. Check Admin Rights on Computer (via ACLs)"
         Write-Host ""
 
         Write-Host "==== Other Commands ====" -ForegroundColor DarkMagenta
         Write-Host "99. Bloodhound Dumper" -ForegroundColor Red
         Write-Host "==== Misc ====" -ForegroundColor Gray
-        Write-Host "17. Exit Advanced Menu"
+        Write-Host "0. Exit Advanced Menu"
         Write-Host ""
 
         $choice = Read-Host "Select an option"
 
         switch ($choice) {
             # ==== DC Commands ====
-            '1'  { fncGetDomainInfo }
-            '2'  { fncGetForestInfo }
-            '3'  { fncListDomainControllers }
-            '4'  { fncGetTrusts }
-            '5'  { fncGetFSMORoles }
-
+            '1'  { 
+				Clear-Host
+				fncPrintBanner	
+				fncGetDomainInfo 
+			}
+            '2'  {
+				Clear-Host
+				fncPrintBanner	
+				fncGetForestInfo 
+			}
+            '3'  {
+				Clear-Host
+				fncPrintBanner	 
+				fncListDomainControllers 
+			}
+            '4'  {
+				Clear-Host
+				fncPrintBanner	 
+				fncGetTrusts 
+			}
+            '5'  {
+				Clear-Host
+				fncPrintBanner				
+				fncGetFSMORoles
+			}
+            '6' {
+				Clear-Host
+				fncPrintBanner
+                fncGetPasswordPolicy 
+				break
+            }
             # ==== User Commands ====
-            '6'  {
+            '7'  {
+				Clear-Host
+				fncPrintBanner
                 $user = Read-Host "Enter the username (samAccountName) to check ACLs for"
                 fncCheckWeakACLs -user $user
             }
 
-            '7'  {
+            '8'  {
+				Clear-Host
+				fncPrintBanner
                 $user = Read-Host "Enter the username (samAccountName) to check SACLS for"
                 fncCheckSACLS -user $user
             }
 
-            '8'  {
+            '9'  {
+				Clear-Host
+				fncPrintBanner				
                 $user = Read-Host "Enter the username (samAccountName) to check SPNs for"
                 fncCheckSPN -user $user
             }
 
-            '9'  {
+            '10'  {
+				Clear-Host
+				fncPrintBanner				
                 $user = Read-Host "Enter the username (samAccountName) to check SID History for"
                 fncCheckSIDHistory -user $user
             }
 
-            '10' {
+            '11' {
+				Clear-Host
+				fncPrintBanner				
                 $user = Read-Host "Enter the username (samAccountName) to list token groups"
                 fncListTokenGroups -user $user
             }
 
-            '11' {
+            '12' {
+				Clear-Host
+				fncPrintBanner				
                 $user = Read-Host "Enter the username (samAccountName) to check delegation settings"
                 fncCheckUserDelegation -user $user
             }
 
-            '12' {
+            '13' {
+				Clear-Host
+				fncPrintBanner				
                 $group = Read-Host "Enter the group name (samAccountName or CN)"
                 fncDumpGroupMembers -group $group
             }
 
-            '13' {
+            '14' {
+				Clear-Host
+				fncPrintBanner				
                 $group = Read-Host "Enter the group name to check for managers"
                 fncCheckGroupManagers -group $group
             }
 
-            '14' {
+            '15' {
+				Clear-Host
+				fncPrintBanner				
                 $group = Read-Host "Enter the group name to check ACLs for"
                 fncCheckGroupACLs -group $group
             }
 
-            '15' {
+            '16' {
+				Clear-Host
+				fncPrintBanner				
                 $computer = Read-Host "Enter the computer name (hostname)"
                 fncDumpComputerGroups -computer $computer
             }
 
-            '16' {
+            '17' {
+				fncCheckComputerAccess
+            }
+            '18' {
+				Clear-Host
+				fncPrintBanner				
                 $computer = Read-Host "Enter the computer name (hostname) to check ACLs for"
                 fncCheckComputerACLs -computer $computer
             }
-
             '0' {
-                Write-Host "`nExiting Pentester Menu..." -ForegroundColor Magenta
-                break
+				fncMainMenu
             }
 
             '99' {
@@ -2992,4 +3607,4 @@ function fncMain {
 }
 
 # Run it
-fncMain 
+fncMain
