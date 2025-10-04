@@ -314,6 +314,12 @@ function fncSaveConfig {
         [hashtable]$config
     )
     try {
+        $parentDir = Split-Path -Parent $jsonFilePath
+        if (-not (Test-Path $parentDir)) {
+            fncPrintMessage "Creating config directory: $parentDir" "success"
+            New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+        }
+
         $jsonContent = $config | ConvertTo-Json -Depth 10
         $jsonContent | Out-File -FilePath $jsonFilePath -Encoding UTF8
         fncPrintMessage "Configuration saved successfully." "success"
